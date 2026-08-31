@@ -41,6 +41,13 @@ import {
   setSelectedAnnee,
 } from "./js/stats-chart.js";
 
+// Numéro de version du widget — à incrémenter à chaque changement (app.js,
+// n'importe quel fichier js/*.js, index.html ou style.css). Affiché en bas de
+// page (voir index.html) pour vérifier facilement, notamment depuis Grist, que
+// la dernière version déployée sur GitHub Pages est bien celle chargée.
+const APP_VERSION = "1";
+document.getElementById("app-version").textContent = APP_VERSION;
+
 // Re-derives everything that depends on the selected indicator but isn't part of
 // main_validation's cache: the year dropdown's options (distinct "annee" values
 // for this indicator) and the stats table / chart below it. Used both when the

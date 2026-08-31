@@ -75,6 +75,15 @@ Si une de ces colonnes est absente sur la feuille sélectionnée, le widget
 affiche un avertissement et désactive la fonctionnalité correspondante (il ne
 crée jamais de colonne automatiquement).
 
+## Numéro de version
+
+Le pied de page du widget affiche `vN` (constante `APP_VERSION` en haut de
+`app.js`). Comme il n'y a ni build ni cache-busting, c'est le seul moyen simple
+de vérifier depuis Grist que la version chargée est bien la dernière déployée
+sur GitHub Pages (utile par exemple après un changement qui semble ne pas
+s'appliquer). **À incrémenter de 1 à chaque modification** d'un des fichiers du
+widget (`app.js`, `js/*.js`, `index.html`, `style.css`).
+
 ## Test local (hors Grist)
 
 ```bash
