@@ -11,8 +11,7 @@
   const mainTableContainer = document.getElementById("main-table-container");
 
   let mainTableId = null;
-  let mainColumns = [];
-  let mainSpecialCols = { idIndicateur: null, validation: null, commentaires: null };
+  let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null };
   let mainRows = [];
 
   let bottomTableId = null;
@@ -91,10 +90,19 @@
 
     const data = await grist.docApi.fetchTable(tableId);
     const columns = Object.keys(data).filter((k) => k !== "id" && k !== "manualSort");
-    mainColumns = columns;
+
+    // id_indicateur is now a Reference to documentation_biso: the raw column holds row
+    // ids (1, 2, 3…), Grist stores the reference's display text in an auto-generated
+    // gristHelper_Display* column, and the libellé comes from a lookup column whose
+    // name contains "Libelle_Indicateur". Fall back to the raw column if this table
+    // isn't a reference (e.g. still plain text codes).
+    const refDisplayCol = columns.find((c) => normalize(c).startsWith("gristhelperdisplay"));
+    const libelleCol = columns.find((c) => normalize(c).includes("libelleindicateur"));
+    const rawIdCol = findColumn(columns, "id_indicateur");
 
     mainSpecialCols = {
-      idIndicateur: findColumn(columns, "id_indicateur"),
+      idIndicateur: refDisplayCol || rawIdCol,
+      libelle: libelleCol,
       validation: findColumn(columns, "validation"),
       commentaires: findColumn(columns, "commentaires"),
     };
@@ -138,7 +146,21 @@
       rows = rows.filter((row) => String(row[col]) === selectedIndicator);
     }
 
-    renderTable(mainTableContainer, mainColumns, rows, mainSpecialCols, mainTableId);
+    const displayColumns = [];
+    if (mainSpecialCols.idIndicateur) {
+      displayColumns.push({ key: mainSpecialCols.idIndicateur, header: "id_indicateur" });
+    }
+    if (mainSpecialCols.libelle) {
+      displayColumns.push({ key: mainSpecialCols.libelle, header: "libelle_indicateur" });
+    }
+    if (mainSpecialCols.validation) {
+      displayColumns.push({ key: mainSpecialCols.validation, header: "validation" });
+    }
+    if (mainSpecialCols.commentaires) {
+      displayColumns.push({ key: mainSpecialCols.commentaires, header: "commentaires" });
+    }
+
+    renderTable(mainTableContainer, displayColumns, rows, mainSpecialCols, mainTableId);
   }
 
   function populateIndicatorSelect() {
@@ -300,7 +322,7 @@
     return Number.isInteger(n) ? String(n) : n.toFixed(2);
   }
 
-  function renderTable(container, columns, rows, specialCols, tableId) {
+  function renderTable(container, displayColumns, rows, specialCols, tableId) {
     container.innerHTML = "";
 
     if (rows.length === 0) {
@@ -313,9 +335,9 @@
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const headRow = document.createElement("tr");
-    columns.forEach((col) => {
+    displayColumns.forEach(({ header }) => {
       const th = document.createElement("th");
-      th.textContent = col;
+      th.textContent = header;
       headRow.appendChild(th);
     });
     thead.appendChild(headRow);
@@ -324,15 +346,15 @@
     const tbody = document.createElement("tbody");
     rows.forEach((row) => {
       const tr = document.createElement("tr");
-      columns.forEach((col) => {
+      displayColumns.forEach(({ key }) => {
         const td = document.createElement("td");
 
-        if (col === specialCols.validation) {
+        if (key === specialCols.validation) {
           td.appendChild(buildValidationSelect(row, specialCols, tableId));
-        } else if (col === specialCols.commentaires) {
+        } else if (key === specialCols.commentaires) {
           td.appendChild(buildCommentInput(row, specialCols, tableId));
         } else {
-          td.textContent = formatValue(row[col]);
+          td.textContent = formatValue(row[key]);
         }
 
         tr.appendChild(td);
