@@ -13,6 +13,17 @@
   //
   // Both table names are hardcoded (MAIN_TABLE_HINT / BOTTOM_TABLE_HINT) rather than
   // user-selectable — this widget is purpose-built for this document's schema.
+  //
+  // "data_validation" holds hundreds of millions of rows, so unlike main_validation
+  // it is NEVER fetched into the browser with grist.docApi.fetchTable — that would
+  // pull the whole table over the wire just to draw one histogram. Instead the
+  // histogram is computed server-side with Grist's own SQL query API
+  // (POST /api/docs/:docId/sql, SELECT-only, running against the doc's underlying
+  // SQLite storage), reached from the widget via an access token — see runSql().
+  // Only two small aggregate queries run per indicator change: one for MIN/MAX/COUNT,
+  // one for the binned counts. Column names for that table are resolved the same
+  // lightweight way, by querying Grist's own schema tables (_grist_Tables /
+  // _grist_Tables_column) instead of fetching a data row.
 
   const MAIN_TABLE_HINT = "main_validation";
   const BOTTOM_TABLE_HINT = "data_validation";
@@ -33,13 +44,13 @@
   let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null };
   let mainRows = [];
 
-  // Same idea for "data_validation".
+  // "data_validation" state: only the table id and the resolved column names are
+  // kept — no row cache, since rows are never fetched (see the SQL note above).
   let bottomTableId = null;
-  let bottomSpecialCols = { idIndicateur: null, validation: null, commentaires: null, value: null };
-  let bottomRows = [];
+  let bottomSpecialCols = { idIndicateur: null, value: null };
 
   // The indicator currently chosen in the dropdown — drives both renderMainFromCache()
-  // and renderBottomFromCache(). Always a string (Grist cell values are coerced with
+  // and renderHistogramFromSql(). Always a string (Grist cell values are coerced with
   // String() before comparison, since a Reference display value could be numeric-looking).
   let selectedIndicator = "";
 
@@ -58,6 +69,60 @@
   function findColumn(columns, targetName) {
     const target = normalize(targetName);
     return columns.find((c) => normalize(c) === target) || null;
+  }
+
+  // Double-quotes a SQL identifier (table or column name) for SQLite, doubling any
+  // embedded quote. Needed because table/column ids come from Grist's schema at
+  // runtime and can't be hardcoded into the query strings.
+  function quoteIdent(id) {
+    return '"' + String(id).replace(/"/g, '""') + '"';
+  }
+
+  // Access tokens from grist.docApi.getAccessToken are short-lived (ttlMsecs) but
+  // meant to be reused across calls rather than fetched per-query; cached here and
+  // refreshed a few seconds before expiry.
+  let cachedAccessToken = null;
+
+  async function getAccessToken() {
+    if (!cachedAccessToken || Date.now() > cachedAccessToken.expiresAt) {
+      const result = await grist.docApi.getAccessToken({ readOnly: true });
+      cachedAccessToken = { ...result, expiresAt: Date.now() + result.ttlMsecs - 5000 };
+    }
+    return cachedAccessToken;
+  }
+
+  // Runs a read-only SQL SELECT against the document via Grist's REST SQL endpoint
+  // and returns the result rows as plain objects (one per record). This is what
+  // lets the histogram aggregate hundreds of millions of rows on the server instead
+  // of downloading them.
+  async function runSql(sql, args) {
+    const { token, baseUrl } = await getAccessToken();
+    const url = baseUrl + "/sql?auth=" + encodeURIComponent(token);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sql, args: args || [], timeout: 20000 }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error("Requête SQL échouée (" + response.status + ") " + text);
+    }
+
+    const body = await response.json();
+    return (body.records || []).map((record) => record.fields);
+  }
+
+  // Lists a table's column ids by querying Grist's own schema tables rather than
+  // fetching a row of real data — cheap regardless of the table's row count.
+  async function getTableColumns(tableId) {
+    const rows = await runSql(
+      "SELECT c.colId AS colId FROM _grist_Tables_column c " +
+        "JOIN _grist_Tables t ON t.id = c.parentId " +
+        "WHERE t.tableId = ?",
+      [tableId]
+    );
+    return rows.map((row) => row.colId).filter((colId) => colId !== "manualSort");
   }
 
   async function init() {
@@ -276,7 +341,13 @@
     indicatorSelect.value = value;
     updateIndicatorNav();
     renderMainFromCache();
-    renderBottomFromCache();
+    // Fire-and-forget: renderHistogramFromSql issues its own SQL requests and
+    // repaints #chart-container when they resolve. Errors are surfaced via
+    // setStatus rather than left as an unhandled rejection.
+    renderHistogramFromSql().catch((err) => {
+      console.error(err);
+      setStatus("Erreur lors du calcul de l'histogramme : " + err.message, "error");
+    });
   }
 
   // Keeps the "X / XX" position label and the prev/next buttons' disabled state in
@@ -299,96 +370,100 @@
     indicatorNextBtn.disabled = currentIndex === -1 || currentIndex >= total - 1;
   }
 
-  // data_validation is only ever used for the histogram (no table is rendered for
-  // it), so bottomSpecialCols only needs idIndicateur (filtering) and value
-  // (the histogram's data). validation/commentaires are resolved too for parity /
-  // in case the table is reused for an editable view later, but nothing renders
-  // them today.
+  // Resolves data_validation's column ids via schema introspection (getTableColumns)
+  // — no data row is fetched, so this is cheap no matter how many rows the table
+  // holds. Only idIndicateur (filtering) and value (the histogram's data) are
+  // needed, since no table is ever rendered for data_validation.
   async function loadBottomTable(tableId) {
     bottomTableId = tableId;
-    bottomRows = [];
     chartContainer.innerHTML = "";
 
     try {
-      const data = await grist.docApi.fetchTable(tableId);
-      const columns = Object.keys(data).filter((k) => k !== "id" && k !== "manualSort");
+      const columns = await getTableColumns(tableId);
 
       bottomSpecialCols = {
         idIndicateur: findColumn(columns, "id_indicateur"),
-        validation: findColumn(columns, "validation"),
-        commentaires: findColumn(columns, "commentaires"),
         value: findColumn(columns, "value"),
       };
 
-      const rowCount = data.id ? data.id.length : 0;
-      const rows = [];
-      for (let i = 0; i < rowCount; i++) {
-        const row = { id: data.id[i] };
-        columns.forEach((col) => {
-          row[col] = data[col][i];
-        });
-        rows.push(row);
+      if (!bottomSpecialCols.value) {
+        setStatus("Attention : colonne \"value\" introuvable dans " + BOTTOM_TABLE_HINT + " : graphique indisponible.", "warn");
+        return;
       }
-      bottomRows = rows;
 
-      renderBottomFromCache();
+      await renderHistogramFromSql();
     } catch (err) {
       console.error(err);
       setStatus("Erreur lors du chargement de la feuille : " + err.message, "error");
     }
   }
 
-  function renderBottomFromCache() {
-    let rows = bottomRows;
-
-    if (bottomSpecialCols.idIndicateur && selectedIndicator) {
-      const col = bottomSpecialCols.idIndicateur;
-      rows = rows.filter((row) => String(row[col]) === selectedIndicator);
-    }
-
-    renderHistogram(rows);
-  }
-
-  // Real frequency histogram of the "value" column (not one bar per row): values
-  // are bucketed into HISTOGRAM_BIN_COUNT equal-width bins between min and max of
-  // the *currently filtered* rows, and each bar shows how many rows fall in that
-  // bin.
-  function renderHistogram(rows) {
+  // Real frequency histogram of the "value" column (not one bar per row), computed
+  // entirely on the server with two SQL aggregate queries against data_validation —
+  // never all of its rows. Values are bucketed into HISTOGRAM_BIN_COUNT equal-width
+  // bins between the MIN/MAX of the currently filtered rows.
+  async function renderHistogramFromSql() {
     chartContainer.innerHTML = "";
 
     const valueCol = bottomSpecialCols.value;
     if (!valueCol) return;
 
-    const values = rows
-      .map((row) => {
-        const raw = row[valueCol];
-        return typeof raw === "number" ? raw : parseFloat(raw);
-      })
-      .filter((v) => Number.isFinite(v));
+    const table = quoteIdent(bottomTableId);
+    const valueId = quoteIdent(valueCol);
 
-    if (values.length === 0) return;
+    // WHERE clause + args shared by both queries below. Filtering by the selected
+    // indicator (when data_validation has that column) is what keeps each query
+    // fast — it should hit an index on id_indicateur rather than scan the full
+    // hundreds-of-millions-row table.
+    const whereParts = [valueId + " IS NOT NULL"];
+    const filterArgs = [];
+    if (bottomSpecialCols.idIndicateur && selectedIndicator) {
+      whereParts.push(quoteIdent(bottomSpecialCols.idIndicateur) + " = ?");
+      filterArgs.push(selectedIndicator);
+    }
+    const where = "WHERE " + whereParts.join(" AND ");
 
-    const min = Math.min(...values);
-    const max = Math.max(...values);
+    const [stats] = await runSql(
+      "SELECT MIN(CAST(" + valueId + " AS REAL)) AS mn, MAX(CAST(" + valueId + " AS REAL)) AS mx, " +
+        "COUNT(*) AS cnt FROM " + table + " " + where,
+      filterArgs
+    );
 
+    if (!stats || !stats.cnt || stats.mn === null || stats.mx === null) return;
+
+    const min = Number(stats.mn);
+    const max = Number(stats.mx);
     const binCount = HISTOGRAM_BIN_COUNT;
-    const bins = new Array(binCount).fill(0);
     const range = max - min;
 
-    values.forEach((v) => {
-      let idx;
-      if (range === 0) {
-        // Every value is identical — a single bin avoids a divide-by-zero below.
-        idx = 0;
-      } else {
-        idx = Math.floor(((v - min) / range) * binCount);
-        // The max value would otherwise map to bin index binCount (out of range),
-        // since ((max - min) / range) * binCount === binCount exactly.
-        if (idx >= binCount) idx = binCount - 1;
-      }
-      bins[idx]++;
-    });
+    const bins = new Array(binCount).fill(0);
 
+    if (range === 0) {
+      // Every value is identical — a single bin avoids a divide-by-zero below, and
+      // there's nothing left to GROUP BY server-side.
+      bins[0] = Number(stats.cnt);
+    } else {
+      // SQLite's multi-argument min()/max() are scalar functions here (not
+      // aggregates) — this clamps the top bin the same way the old client-side
+      // `if (idx >= binCount) idx = binCount - 1` did, since the max value would
+      // otherwise compute to bin index binCount (one past the last bin).
+      const binRows = await runSql(
+        "SELECT MIN(CAST(((CAST(" + valueId + " AS REAL) - ?) / ?) * ? AS INT), ?) AS bin, COUNT(*) AS cnt " +
+          "FROM " + table + " " + where + " GROUP BY bin ORDER BY bin",
+        [min, range, binCount, binCount - 1, ...filterArgs]
+      );
+      binRows.forEach((row) => {
+        const idx = Number(row.bin);
+        if (idx >= 0 && idx < binCount) bins[idx] = Number(row.cnt);
+      });
+    }
+
+    renderHistogramBins(bins, min, max);
+  }
+
+  function renderHistogramBins(bins, min, max) {
+    const binCount = bins.length;
+    const range = max - min;
     const maxCount = Math.max(...bins, 1);
     const binWidth = range === 0 ? 0 : range / binCount;
 
@@ -520,9 +595,10 @@
   }
 
   // Writes a single cell back to Grist and mirrors it into the in-memory row cache
-  // (mainRows/bottomRows) so a later re-render (e.g. switching indicator and back)
-  // reflects the edit without refetching the table. The "saving"/"saved" classes
-  // give the cell a brief visual confirmation (see style.css).
+  // (mainRows — the only cache that exists, since main_validation is the only table
+  // rendered with editable cells) so a later re-render (e.g. switching indicator and
+  // back) reflects the edit without refetching the table. The "saving"/"saved"
+  // classes give the cell a brief visual confirmation (see style.css).
   async function updateCell(tableId, rowId, colName, value, cellEl) {
     if (!tableId || !colName) return;
 
@@ -533,8 +609,7 @@
         ["UpdateRecord", tableId, rowId, { [colName]: value }],
       ]);
 
-      const cache = tableId === mainTableId ? mainRows : bottomRows;
-      const cachedRow = cache.find((r) => r.id === rowId);
+      const cachedRow = mainRows.find((r) => r.id === rowId);
       if (cachedRow) cachedRow[colName] = value;
 
       cellEl.classList.remove("saving");
