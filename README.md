@@ -9,7 +9,13 @@ des 10 premières lignes correspondantes, saisie de `validation` (Oui/Non) et
 
 - `index.html` — structure de la page
 - `style.css` — mise en forme
-- `app.js` — logique (appels à l'API Grist, filtrage, écriture des cellules)
+- `app.js` — point d'entrée (câblage des événements, initialisation), importe les modules ES `js/*.js` :
+  - `js/dom.js` — références DOM et affichage du statut
+  - `js/utils.js` — petites fonctions pures partagées
+  - `js/grist-api.js` — accès à l'API Grist (jeton, SQL, schéma)
+  - `js/table-render.js` — rendu générique d'un tableau avec cellules éditables
+  - `js/main-table.js` — table `main_validation` (indicateurs, compteurs)
+  - `js/stats-chart.js` — table `data_validation` (année, statistiques, graphique)
 
 ## Déploiement sur GitHub Pages
 
