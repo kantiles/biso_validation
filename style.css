@@ -16,6 +16,9 @@
   --warn-text: #8a5a00;
   --error-bg: #fdecea;
   --error-text: #b3261e;
+  --stat-neutral: #1f2933;
+  --stat-success: #1b5e33;
+  --stat-danger: #8c1c13;
 }
 
 * {
@@ -29,6 +32,52 @@ body {
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
+}
+
+/* Summary counters at the very top of the widget: total indicators, and their
+   breakdown by validation status. Values are recomputed from all of
+   main_validation's rows in app.js's renderStats() — independent of the
+   Validation/indicator filters below, since this is meant as a global overview. */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  min-width: 110px;
+}
+
+.stat-value {
+  font-weight: 700;
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.stat-value--neutral {
+  color: var(--stat-neutral);
+}
+
+.stat-value--success {
+  color: var(--stat-success);
+}
+
+.stat-value--danger {
+  color: var(--stat-danger);
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* Wraps each top-level block (the main_validation table, the histogram) with a
@@ -213,8 +262,8 @@ tbody tr:nth-child(even) {
   background: var(--bg-alt);
 }
 
-/* The validation <select> and commentaires <input> that app.js injects into table
-   cells (buildValidationSelect / buildCommentInput). */
+/* The validation <select> and commentaires <textarea> that app.js injects into
+   table cells (buildValidationSelect / buildCommentInput). */
 td select,
 td input[type="text"] {
   width: 100%;
@@ -222,6 +271,19 @@ td input[type="text"] {
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 13px;
+}
+
+/* Sized via `rows` (set to 2 in buildCommentInput) rather than a fixed height, so
+   it grows with the font instead of clipping; resize stays enabled so it can be
+   made taller for a long comment. */
+.comment-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
 }
 
 /* Transient feedback classes toggled by app.js's updateCell() while an edit is

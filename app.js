@@ -42,6 +42,10 @@
   const statusEl = document.getElementById("status");
   const chartContainer = document.getElementById("chart-container");
   const mainTableContainer = document.getElementById("main-table-container");
+  const statTotalEl = document.getElementById("stat-total");
+  const statValidatedEl = document.getElementById("stat-validated");
+  const statToReviewEl = document.getElementById("stat-to-review");
+  const statTodoEl = document.getElementById("stat-todo");
 
   // "main_validation" state: the table id (needed for UpdateRecord calls), the
   // resolved column names for the fields we treat specially, and the cached rows
@@ -265,6 +269,44 @@
     // indicator found), and renderMainFromCache reads selectedIndicator to filter.
     populateIndicatorSelect();
     renderMainFromCache();
+    renderStats();
+  }
+
+  // Top-of-widget counters: total indicators and their breakdown by validation
+  // status, computed from ALL of main_validation's rows (ignoring the Validation
+  // filter and the selected indicator) so they always read as a global overview.
+  // Counts distinct id_indicateur values, in case a table ever has duplicate rows
+  // per indicator.
+  function renderStats() {
+    const col = mainSpecialCols.idIndicateur;
+    const validationCol = mainSpecialCols.validation;
+
+    const seen = new Set();
+    let validated = 0;
+    let toReview = 0;
+    let todo = 0;
+
+    mainRows.forEach((row) => {
+      const id = col ? row[col] : null;
+      if (id === null || id === undefined || id === "") return;
+      const key = String(id);
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      const validationValue = validationCol ? row[validationCol] || "" : "";
+      if (validationValue === "Oui") {
+        validated++;
+      } else if (validationValue === "Non") {
+        toReview++;
+      } else {
+        todo++;
+      }
+    });
+
+    statTotalEl.textContent = String(seen.size);
+    statValidatedEl.textContent = String(validated);
+    statToReviewEl.textContent = String(toReview);
+    statTodoEl.textContent = String(todo);
   }
 
   function renderMainFromCache() {
@@ -615,16 +657,19 @@
     return select;
   }
 
-  // Saved on blur rather than on every keystroke, to avoid one Grist API call per
-  // character typed.
+  // A <textarea> rather than a single-line <input> — commentaires can run longer
+  // than a table cell's width, so a 2-row box (see .comment-input in style.css)
+  // gives room to read/write without truncating. Saved on blur rather than on
+  // every keystroke, to avoid one Grist API call per character typed.
   function buildCommentInput(row, specialCols, tableId) {
-    const input = document.createElement("input");
-    input.type = "text";
-    input.value = row[specialCols.commentaires] || "";
-    input.addEventListener("blur", () => {
-      updateCell(tableId, row.id, specialCols.commentaires, input.value, input.closest("td"));
+    const textarea = document.createElement("textarea");
+    textarea.className = "comment-input";
+    textarea.rows = 2;
+    textarea.value = row[specialCols.commentaires] || "";
+    textarea.addEventListener("blur", () => {
+      updateCell(tableId, row.id, specialCols.commentaires, textarea.value, textarea.closest("td"));
     });
-    return input;
+    return textarea;
   }
 
   // Writes a single cell back to Grist and mirrors it into the in-memory row cache
@@ -644,6 +689,11 @@
 
       const cachedRow = mainRows.find((r) => r.id === rowId);
       if (cachedRow) cachedRow[colName] = value;
+
+      // A validation edit changes which bucket the row counts toward — keep the
+      // top-of-widget counters in sync immediately rather than waiting for a
+      // reload.
+      if (colName === mainSpecialCols.validation) renderStats();
 
       cellEl.classList.remove("saving");
       cellEl.classList.add("saved");
