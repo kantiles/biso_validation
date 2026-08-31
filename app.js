@@ -1,19 +1,28 @@
 (function () {
   "use strict";
 
-  const MAX_ROWS = 10;
-  const DEFAULT_TABLE_HINT = "base biso doc";
-  const SPECIAL_COLUMNS = new Set(["id_indicateur", "validation", "commentaires", "value"]);
+  const MAIN_TABLE_HINT = "main_validation";
+  const DEFAULT_BOTTOM_TABLE_HINT = "data_validation";
+  const HISTOGRAM_BIN_COUNT = 10;
 
   const sheetSelect = document.getElementById("sheet-select");
-  const indicatorFilter = document.getElementById("indicator-filter");
+  const indicatorSelect = document.getElementById("indicator-select");
   const statusEl = document.getElementById("status");
   const chartContainer = document.getElementById("chart-container");
   const tableContainer = document.getElementById("table-container");
+  const mainTableContainer = document.getElementById("main-table-container");
 
-  let currentTableId = null;
-  let currentColumns = [];
-  let currentSpecialCols = { idIndicateur: null, validation: null, commentaires: null, value: null };
+  let mainTableId = null;
+  let mainColumns = [];
+  let mainSpecialCols = { idIndicateur: null, validation: null, commentaires: null };
+  let mainRows = [];
+
+  let bottomTableId = null;
+  let bottomColumns = [];
+  let bottomSpecialCols = { idIndicateur: null, validation: null, commentaires: null, value: null };
+  let bottomRows = [];
+
+  let selectedIndicator = "";
 
   function setStatus(message, level) {
     statusEl.textContent = message || "";
@@ -50,20 +59,31 @@
 
     grist.ready({ requiredAccess: "full" });
 
-    sheetSelect.addEventListener("change", () => loadTable(sheetSelect.value));
-    indicatorFilter.addEventListener("change", () => renderFromCache());
+    sheetSelect.addEventListener("change", () => loadBottomTable(sheetSelect.value));
+    indicatorSelect.addEventListener("change", () => {
+      selectedIndicator = indicatorSelect.value;
+      renderBottomFromCache();
+    });
 
     try {
       const tableIds = await grist.docApi.listTables();
+
+      const mainMatch = tableIds.find((id) => normalize(id) === normalize(MAIN_TABLE_HINT));
+      if (!mainMatch) {
+        setStatus("Table \"" + MAIN_TABLE_HINT + "\" introuvable dans ce document.", "error");
+        return;
+      }
+      await loadMainTable(mainMatch);
+
       populateSheetSelect(tableIds);
       if (tableIds.length > 0) {
-        await loadTable(sheetSelect.value);
+        await loadBottomTable(sheetSelect.value);
       } else {
         setStatus("Aucune table trouvée dans ce document.", "warn");
       }
     } catch (err) {
       console.error(err);
-      setStatus("Erreur lors du chargement de la liste des feuilles : " + err.message, "error");
+      setStatus("Erreur lors du chargement du document : " + err.message, "error");
     }
   }
 
@@ -76,26 +96,105 @@
       sheetSelect.appendChild(option);
     });
 
-    const defaultMatch = tableIds.find((id) => normalize(id) === normalize(DEFAULT_TABLE_HINT));
+    const defaultMatch = tableIds.find((id) => normalize(id) === normalize(DEFAULT_BOTTOM_TABLE_HINT));
     if (defaultMatch) {
       sheetSelect.value = defaultMatch;
     }
   }
 
-  let cachedRows = [];
+  async function loadMainTable(tableId) {
+    mainTableId = tableId;
+    mainRows = [];
+    mainTableContainer.innerHTML = "";
 
-  async function loadTable(tableId) {
-    currentTableId = tableId;
-    cachedRows = [];
+    const data = await grist.docApi.fetchTable(tableId);
+    const columns = Object.keys(data).filter((k) => k !== "id" && k !== "manualSort");
+    mainColumns = columns;
+
+    mainSpecialCols = {
+      idIndicateur: findColumn(columns, "id_indicateur"),
+      validation: findColumn(columns, "validation"),
+      commentaires: findColumn(columns, "commentaires"),
+    };
+
+    const rowCount = data.id ? data.id.length : 0;
+    const rows = [];
+    for (let i = 0; i < rowCount; i++) {
+      const row = { id: data.id[i] };
+      columns.forEach((col) => {
+        row[col] = data[col][i];
+      });
+      rows.push(row);
+    }
+    mainRows = rows;
+
+    const warnings = [];
+    if (!mainSpecialCols.idIndicateur) {
+      warnings.push("colonne \"id_indicateur\" introuvable dans " + MAIN_TABLE_HINT);
+    }
+    if (!mainSpecialCols.validation) {
+      warnings.push("colonne \"validation\" introuvable dans " + MAIN_TABLE_HINT + " : saisie désactivée");
+    }
+    if (!mainSpecialCols.commentaires) {
+      warnings.push("colonne \"commentaires\" introuvable dans " + MAIN_TABLE_HINT + " : saisie désactivée");
+    }
+    if (warnings.length > 0) {
+      setStatus("Attention : " + warnings.join(" ; ") + ".", "warn");
+    } else {
+      setStatus("", "info");
+    }
+
+    renderTable(mainTableContainer, mainColumns, mainRows, mainSpecialCols, mainTableId);
+    populateIndicatorSelect();
+  }
+
+  function populateIndicatorSelect() {
+    indicatorSelect.innerHTML = "";
+
+    const col = mainSpecialCols.idIndicateur;
+    if (!col) {
+      indicatorSelect.disabled = true;
+      selectedIndicator = "";
+      return;
+    }
+
+    indicatorSelect.disabled = false;
+
+    const seen = new Set();
+    const values = [];
+    mainRows.forEach((row) => {
+      const v = row[col];
+      if (v === null || v === undefined || v === "") return;
+      const s = String(v);
+      if (!seen.has(s)) {
+        seen.add(s);
+        values.push(s);
+      }
+    });
+
+    values.forEach((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      indicatorSelect.appendChild(option);
+    });
+
+    selectedIndicator = values.length > 0 ? values[0] : "";
+    indicatorSelect.value = selectedIndicator;
+  }
+
+  async function loadBottomTable(tableId) {
+    bottomTableId = tableId;
+    bottomRows = [];
     tableContainer.innerHTML = "";
-    setStatus("Chargement de la feuille \"" + tableId + "\"...", "info");
+    chartContainer.innerHTML = "";
 
     try {
       const data = await grist.docApi.fetchTable(tableId);
       const columns = Object.keys(data).filter((k) => k !== "id" && k !== "manualSort");
-      currentColumns = columns;
+      bottomColumns = columns;
 
-      currentSpecialCols = {
+      bottomSpecialCols = {
         idIndicateur: findColumn(columns, "id_indicateur"),
         validation: findColumn(columns, "validation"),
         commentaires: findColumn(columns, "commentaires"),
@@ -111,118 +210,75 @@
         });
         rows.push(row);
       }
-      cachedRows = rows;
+      bottomRows = rows;
 
-      const warnings = [];
-      if (!currentSpecialCols.idIndicateur) {
-        warnings.push("colonne \"id_indicateur\" introuvable : aucun filtrage possible");
-      }
-      if (!currentSpecialCols.validation) {
-        warnings.push("colonne \"validation\" introuvable : saisie désactivée");
-      }
-      if (!currentSpecialCols.commentaires) {
-        warnings.push("colonne \"commentaires\" introuvable : saisie désactivée");
-      }
-      if (!currentSpecialCols.value) {
-        warnings.push("colonne \"value\" introuvable : graphique indisponible");
-      }
-
-      if (warnings.length > 0) {
-        setStatus("Attention : " + warnings.join(" ; ") + ".", "warn");
-      } else {
-        setStatus("", "info");
-      }
-
-      populateIndicatorFilter();
-      renderFromCache();
+      renderBottomFromCache();
     } catch (err) {
       console.error(err);
       setStatus("Erreur lors du chargement de la feuille : " + err.message, "error");
     }
   }
 
-  function populateIndicatorFilter() {
-    indicatorFilter.innerHTML = "";
+  function renderBottomFromCache() {
+    let rows = bottomRows;
 
-    const col = currentSpecialCols.idIndicateur;
-    if (!col) {
-      indicatorFilter.disabled = true;
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "—";
-      indicatorFilter.appendChild(option);
-      return;
+    if (bottomSpecialCols.idIndicateur && selectedIndicator) {
+      const col = bottomSpecialCols.idIndicateur;
+      rows = rows.filter((row) => String(row[col]) === selectedIndicator);
     }
 
-    indicatorFilter.disabled = false;
-
-    const allOption = document.createElement("option");
-    allOption.value = "";
-    allOption.textContent = "Tous";
-    indicatorFilter.appendChild(allOption);
-
-    const values = Array.from(
-      new Set(
-        cachedRows
-          .map((row) => row[col])
-          .filter((v) => v !== null && v !== undefined && v !== "")
-          .map((v) => String(v))
-      )
-    ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
-    values.forEach((value) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = value;
-      indicatorFilter.appendChild(option);
-    });
+    renderTable(tableContainer, bottomColumns, rows, bottomSpecialCols, bottomTableId);
+    renderHistogram(rows);
   }
 
-  function renderFromCache() {
-    const filterValue = indicatorFilter.value;
-    let rows = cachedRows;
-
-    if (currentSpecialCols.idIndicateur && filterValue) {
-      const col = currentSpecialCols.idIndicateur;
-      rows = rows.filter((row) => String(row[col]) === filterValue);
-    }
-
-    rows = rows.slice(0, MAX_ROWS);
-    renderTable(rows);
-    renderChart(rows);
-  }
-
-  function renderChart(rows) {
+  function renderHistogram(rows) {
     chartContainer.innerHTML = "";
 
-    const valueCol = currentSpecialCols.value;
+    const valueCol = bottomSpecialCols.value;
     if (!valueCol) return;
 
-    const labelCol = currentSpecialCols.idIndicateur;
-
-    const entries = rows
+    const values = rows
       .map((row) => {
-        const rawValue = row[valueCol];
-        const numericValue = typeof rawValue === "number" ? rawValue : parseFloat(rawValue);
-        return {
-          label: labelCol && row[labelCol] !== null && row[labelCol] !== undefined ? String(row[labelCol]) : "#" + row.id,
-          value: Number.isFinite(numericValue) ? numericValue : 0,
-        };
+        const raw = row[valueCol];
+        return typeof raw === "number" ? raw : parseFloat(raw);
       })
-      .filter((entry) => Number.isFinite(entry.value));
+      .filter((v) => Number.isFinite(v));
 
-    if (entries.length === 0) return;
+    if (values.length === 0) return;
 
-    const maxValue = Math.max(...entries.map((e) => e.value), 0) || 1;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+
+    const binCount = HISTOGRAM_BIN_COUNT;
+    const bins = new Array(binCount).fill(0);
+    const range = max - min;
+
+    values.forEach((v) => {
+      let idx;
+      if (range === 0) {
+        idx = 0;
+      } else {
+        idx = Math.floor(((v - min) / range) * binCount);
+        if (idx >= binCount) idx = binCount - 1;
+      }
+      bins[idx]++;
+    });
+
+    const maxCount = Math.max(...bins, 1);
+    const binWidth = range === 0 ? 0 : range / binCount;
 
     const title = document.createElement("h3");
-    title.textContent = "Valeur par indicateur";
+    title.textContent = "Distribution de value" + (selectedIndicator ? " — " + selectedIndicator : "");
     chartContainer.appendChild(title);
 
     const chart = document.createElement("div");
     chart.className = "chart";
 
-    entries.forEach(({ label, value }) => {
+    bins.forEach((count, i) => {
+      const rangeStart = range === 0 ? min : min + i * binWidth;
+      const rangeEnd = range === 0 ? max : min + (i + 1) * binWidth;
+      const label = range === 0 ? formatNumber(min) : formatNumber(rangeStart) + " – " + formatNumber(rangeEnd);
+
       const row = document.createElement("div");
       row.className = "chart-row";
 
@@ -234,12 +290,12 @@
       track.className = "chart-bar-track";
       const bar = document.createElement("div");
       bar.className = "chart-bar";
-      bar.style.width = (value / maxValue) * 100 + "%";
+      bar.style.width = (count / maxCount) * 100 + "%";
       track.appendChild(bar);
 
       const countEl = document.createElement("span");
       countEl.className = "chart-count";
-      countEl.textContent = String(value);
+      countEl.textContent = String(count);
 
       row.appendChild(labelEl);
       row.appendChild(track);
@@ -250,20 +306,24 @@
     chartContainer.appendChild(chart);
   }
 
-  function renderTable(rows) {
-    tableContainer.innerHTML = "";
+  function formatNumber(n) {
+    return Number.isInteger(n) ? String(n) : n.toFixed(2);
+  }
+
+  function renderTable(container, columns, rows, specialCols, tableId) {
+    container.innerHTML = "";
 
     if (rows.length === 0) {
       const empty = document.createElement("p");
       empty.textContent = "Aucune ligne à afficher.";
-      tableContainer.appendChild(empty);
+      container.appendChild(empty);
       return;
     }
 
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const headRow = document.createElement("tr");
-    currentColumns.forEach((col) => {
+    columns.forEach((col) => {
       const th = document.createElement("th");
       th.textContent = col;
       headRow.appendChild(th);
@@ -274,13 +334,13 @@
     const tbody = document.createElement("tbody");
     rows.forEach((row) => {
       const tr = document.createElement("tr");
-      currentColumns.forEach((col) => {
+      columns.forEach((col) => {
         const td = document.createElement("td");
 
-        if (col === currentSpecialCols.validation) {
-          td.appendChild(buildValidationSelect(row));
-        } else if (col === currentSpecialCols.commentaires) {
-          td.appendChild(buildCommentInput(row));
+        if (col === specialCols.validation) {
+          td.appendChild(buildValidationSelect(row, specialCols, tableId));
+        } else if (col === specialCols.commentaires) {
+          td.appendChild(buildCommentInput(row, specialCols, tableId));
         } else {
           td.textContent = formatValue(row[col]);
         }
@@ -291,7 +351,7 @@
     });
     table.appendChild(tbody);
 
-    tableContainer.appendChild(table);
+    container.appendChild(table);
   }
 
   function formatValue(value) {
@@ -300,7 +360,7 @@
     return String(value);
   }
 
-  function buildValidationSelect(row) {
+  function buildValidationSelect(row, specialCols, tableId) {
     const select = document.createElement("select");
     ["", "Oui", "Non"].forEach((opt) => {
       const option = document.createElement("option");
@@ -308,34 +368,35 @@
       option.textContent = opt === "" ? "—" : opt;
       select.appendChild(option);
     });
-    select.value = row[currentSpecialCols.validation] || "";
+    select.value = row[specialCols.validation] || "";
     select.addEventListener("change", () => {
-      updateCell(row.id, currentSpecialCols.validation, select.value, select.closest("td"));
+      updateCell(tableId, row.id, specialCols.validation, select.value, select.closest("td"));
     });
     return select;
   }
 
-  function buildCommentInput(row) {
+  function buildCommentInput(row, specialCols, tableId) {
     const input = document.createElement("input");
     input.type = "text";
-    input.value = row[currentSpecialCols.commentaires] || "";
+    input.value = row[specialCols.commentaires] || "";
     input.addEventListener("blur", () => {
-      updateCell(row.id, currentSpecialCols.commentaires, input.value, input.closest("td"));
+      updateCell(tableId, row.id, specialCols.commentaires, input.value, input.closest("td"));
     });
     return input;
   }
 
-  async function updateCell(rowId, colName, value, cellEl) {
-    if (!currentTableId || !colName) return;
+  async function updateCell(tableId, rowId, colName, value, cellEl) {
+    if (!tableId || !colName) return;
 
     cellEl.classList.add("saving");
     cellEl.classList.remove("saved");
     try {
       await grist.docApi.applyUserActions([
-        ["UpdateRecord", currentTableId, rowId, { [colName]: value }],
+        ["UpdateRecord", tableId, rowId, { [colName]: value }],
       ]);
 
-      const cachedRow = cachedRows.find((r) => r.id === rowId);
+      const cache = tableId === mainTableId ? mainRows : bottomRows;
+      const cachedRow = cache.find((r) => r.id === rowId);
       if (cachedRow) cachedRow[colName] = value;
 
       cellEl.classList.remove("saving");

@@ -25,6 +25,22 @@ body {
   font-size: 14px;
 }
 
+.panel {
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel:last-child {
+  border-bottom: none;
+}
+
+.panel h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  color: var(--text);
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
