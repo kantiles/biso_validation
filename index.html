@@ -8,27 +8,20 @@
   <script src="https://grist.numerique.gouv.fr/grist-plugin-api.js"></script>
 </head>
 <body>
+  <div class="toolbar">
+    <label for="indicator-select">Indicateur</label>
+    <select id="indicator-select"></select>
+  </div>
+
   <div id="status" class="status"></div>
 
   <section class="panel">
     <h2>main_validation</h2>
     <div id="main-table-container"></div>
-
-    <div class="toolbar">
-      <label for="indicator-select">Indicateur</label>
-      <select id="indicator-select"></select>
-    </div>
   </section>
 
   <section class="panel">
-    <div class="toolbar">
-      <label for="sheet-select">Feuille</label>
-      <select id="sheet-select"></select>
-    </div>
-
     <div id="chart-container" class="chart-container"></div>
-
-    <div id="table-container"></div>
   </section>
 
   <script src="app.js"></script>

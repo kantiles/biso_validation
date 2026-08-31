@@ -2,14 +2,12 @@
   "use strict";
 
   const MAIN_TABLE_HINT = "main_validation";
-  const DEFAULT_BOTTOM_TABLE_HINT = "data_validation";
+  const BOTTOM_TABLE_HINT = "data_validation";
   const HISTOGRAM_BIN_COUNT = 10;
 
-  const sheetSelect = document.getElementById("sheet-select");
   const indicatorSelect = document.getElementById("indicator-select");
   const statusEl = document.getElementById("status");
   const chartContainer = document.getElementById("chart-container");
-  const tableContainer = document.getElementById("table-container");
   const mainTableContainer = document.getElementById("main-table-container");
 
   let mainTableId = null;
@@ -18,7 +16,6 @@
   let mainRows = [];
 
   let bottomTableId = null;
-  let bottomColumns = [];
   let bottomSpecialCols = { idIndicateur: null, validation: null, commentaires: null, value: null };
   let bottomRows = [];
 
@@ -59,9 +56,9 @@
 
     grist.ready({ requiredAccess: "full" });
 
-    sheetSelect.addEventListener("change", () => loadBottomTable(sheetSelect.value));
     indicatorSelect.addEventListener("change", () => {
       selectedIndicator = indicatorSelect.value;
+      renderMainFromCache();
       renderBottomFromCache();
     });
 
@@ -75,30 +72,15 @@
       }
       await loadMainTable(mainMatch);
 
-      populateSheetSelect(tableIds);
-      if (tableIds.length > 0) {
-        await loadBottomTable(sheetSelect.value);
-      } else {
-        setStatus("Aucune table trouvée dans ce document.", "warn");
+      const bottomMatch = tableIds.find((id) => normalize(id) === normalize(BOTTOM_TABLE_HINT));
+      if (!bottomMatch) {
+        setStatus("Table \"" + BOTTOM_TABLE_HINT + "\" introuvable dans ce document.", "error");
+        return;
       }
+      await loadBottomTable(bottomMatch);
     } catch (err) {
       console.error(err);
       setStatus("Erreur lors du chargement du document : " + err.message, "error");
-    }
-  }
-
-  function populateSheetSelect(tableIds) {
-    sheetSelect.innerHTML = "";
-    tableIds.forEach((id) => {
-      const option = document.createElement("option");
-      option.value = id;
-      option.textContent = id;
-      sheetSelect.appendChild(option);
-    });
-
-    const defaultMatch = tableIds.find((id) => normalize(id) === normalize(DEFAULT_BOTTOM_TABLE_HINT));
-    if (defaultMatch) {
-      sheetSelect.value = defaultMatch;
     }
   }
 
@@ -144,8 +126,19 @@
       setStatus("", "info");
     }
 
-    renderTable(mainTableContainer, mainColumns, mainRows, mainSpecialCols, mainTableId);
     populateIndicatorSelect();
+    renderMainFromCache();
+  }
+
+  function renderMainFromCache() {
+    let rows = mainRows;
+
+    if (mainSpecialCols.idIndicateur && selectedIndicator) {
+      const col = mainSpecialCols.idIndicateur;
+      rows = rows.filter((row) => String(row[col]) === selectedIndicator);
+    }
+
+    renderTable(mainTableContainer, mainColumns, rows, mainSpecialCols, mainTableId);
   }
 
   function populateIndicatorSelect() {
@@ -186,13 +179,11 @@
   async function loadBottomTable(tableId) {
     bottomTableId = tableId;
     bottomRows = [];
-    tableContainer.innerHTML = "";
     chartContainer.innerHTML = "";
 
     try {
       const data = await grist.docApi.fetchTable(tableId);
       const columns = Object.keys(data).filter((k) => k !== "id" && k !== "manualSort");
-      bottomColumns = columns;
 
       bottomSpecialCols = {
         idIndicateur: findColumn(columns, "id_indicateur"),
@@ -227,7 +218,6 @@
       rows = rows.filter((row) => String(row[col]) === selectedIndicator);
     }
 
-    renderTable(tableContainer, bottomColumns, rows, bottomSpecialCols, bottomTableId);
     renderHistogram(rows);
   }
 
