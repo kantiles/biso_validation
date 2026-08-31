@@ -77,6 +77,17 @@ compte : identifiants non quotés repliés en minuscules (d'où les alias
 (`TRY_CAST` utilisé à la place), et `MAX(a, b)` scalaire absent (remplacé par
 `GREATEST(a, b)`).
 
+## Bibliothèques externes
+
+Chargées via import ES depuis jsDelivr (pas de build, pas de `node_modules`) :
+
+- [`@duckdb/duckdb-wasm`](https://duckdb.org/docs/api/wasm/overview) + [`apache-arrow`](https://arrow.apache.org/docs/js/) — voir "Statistiques sur `data_validation`" ci-dessus.
+- [`@observablehq/plot`](https://observablehq.com/plot/) — dessine le graphique en barres par département (`renderDepartmentBars` dans `js/stats-chart.js`), plutôt que du HTML/CSS fait main.
+
+Ces deux imports pointent vers une version précise (ex. `@observablehq/plot@0.6.17/+esm`)
+plutôt qu'une plage — à mettre à jour manuellement si besoin, `+esm` n'étant qu'un
+mode de livraison (bundle ES module), pas un mécanisme de versioning.
+
 ## Installation dans Grist
 
 1. Dans le document Grist, ajouter un nouveau widget → **Custom** (Widget URL personnalisée).
@@ -102,7 +113,7 @@ crée jamais de colonne automatiquement).
 
 ## Numéro de version
 
-Le pied de page du widget affiche `vN` (constante `APP_VERSION` en haut de
+Le coin supérieur droit du widget affiche `vN` (constante `APP_VERSION` en haut de
 `app.js`). Comme il n'y a ni build ni cache-busting, c'est le seul moyen simple
 de vérifier depuis Grist que la version chargée est bien la dernière déployée
 sur GitHub Pages (utile par exemple après un changement qui semble ne pas

@@ -27,6 +27,7 @@
 }
 
 body {
+  position: relative;
   margin: 0;
   padding: 16px;
   background: var(--bg);
@@ -190,6 +191,13 @@ body {
   display: none;
 }
 
+/* The chart itself is an Observable Plot SVG of fixed pixel width (see
+   renderDepartmentBars in js/stats-chart.js) — scroll rather than overflow the
+   page on narrow viewports. */
+.chart-container {
+  overflow-x: auto;
+}
+
 /* Distribution summary table (one row per niv_geo: effectif/NA/min/max/déciles/
    moyenne/médiane/quartiles/écart-type/IQR) rendered by renderValueStatsTable()
    above the département bar chart. */
@@ -215,50 +223,6 @@ body {
   margin: 0 0 8px;
   font-size: 14px;
   color: var(--text-muted);
-}
-
-.chart {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 16px;
-}
-
-/* One row per département bar: [code_geo label] [bar] [value]. */
-.chart-row {
-  display: grid;
-  grid-template-columns: minmax(80px, 160px) 1fr 32px;
-  align-items: center;
-  gap: 8px;
-}
-
-.chart-label {
-  font-size: 12px;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chart-bar-track {
-  background: var(--bg-alt);
-  border-radius: 3px;
-  height: 14px;
-  overflow: hidden;
-}
-
-/* Width is set inline per bar in app.js (proportional to the bin's count vs. the
-   tallest bin), so no width rule is defined here. */
-.chart-bar {
-  background: var(--accent);
-  height: 100%;
-  border-radius: 3px;
-}
-
-.chart-count {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-align: right;
 }
 
 table {
@@ -321,8 +285,9 @@ td.saved {
 /* Small, unobtrusive version marker at the bottom of the widget — see
    APP_VERSION in app.js. */
 .app-version {
-  margin-top: 16px;
-  text-align: right;
+  position: absolute;
+  top: 8px;
+  right: 12px;
   font-size: 11px;
   color: var(--text-muted);
 }

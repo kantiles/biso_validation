@@ -6,13 +6,15 @@
 // chargées dans une base DuckDB en mémoire dans le navigateur ; tous les calculs
 // ci-dessous (statistiques de distribution, quantiles, graphique) sont ensuite
 // des requêtes SQL contre cette base locale, jamais un rapatriement des lignes
-// une par une dans du JS.
+// une par une dans du JS. Le graphique lui-même est rendu avec Observable Plot
+// plutôt qu'en HTML/CSS fait main (voir renderDepartmentBars).
 "use strict";
 
 import { quoteIdent, findColumn, formatNumber, formatNumberOrDash } from "./utils.js";
 import { runSql, loadTableIntoDuckDb } from "./grist-api.js";
 import { anneeSelect, chartContainer, valueStatsContainer, setStatus } from "./dom.js";
 import { getSelectedIndicator } from "./main-table.js";
+import * as Plot from "https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6.17/+esm";
 
 export const BOTTOM_TABLE_HINT = "data_validation";
 
@@ -384,11 +386,10 @@ async function fetchQuantiles(table, castValue, where, filterArgs, count) {
   };
 }
 
-// One bar per département ("code_geo"), width proportional to |value| against
-// the largest |value| among the bars — handles the case where "value" can be
-// negative, since a bar's track can only grow one way.
+// One horizontal bar per département ("code_geo"), rendered with Observable
+// Plot — negative values just extend the bar left of the zero rule instead of
+// needing the abs()-based width hack a hand-rolled div/CSS bar chart needs.
 function renderDepartmentBars(bars) {
-  const maxAbsValue = Math.max(...bars.map((b) => Math.abs(b.value)), 1);
   const selectedIndicator = getSelectedIndicator();
 
   const title = document.createElement("h3");
@@ -397,32 +398,30 @@ function renderDepartmentBars(bars) {
     (selectedAnnee ? " — " + selectedAnnee : "");
   chartContainer.appendChild(title);
 
-  const chart = document.createElement("div");
-  chart.className = "chart";
-
-  bars.forEach(({ label, value }) => {
-    const row = document.createElement("div");
-    row.className = "chart-row";
-
-    const labelEl = document.createElement("span");
-    labelEl.className = "chart-label";
-    labelEl.textContent = label;
-
-    const track = document.createElement("div");
-    track.className = "chart-bar-track";
-    const bar = document.createElement("div");
-    bar.className = "chart-bar";
-    bar.style.width = (Math.abs(value) / maxAbsValue) * 100 + "%";
-    track.appendChild(bar);
-
-    const countEl = document.createElement("span");
-    countEl.className = "chart-count";
-    countEl.textContent = formatNumber(value);
-
-    row.appendChild(labelEl);
-    row.appendChild(track);
-    row.appendChild(countEl);
-    chart.appendChild(row);
+  const chart = Plot.plot({
+    width: Math.max(480, chartContainer.clientWidth || 0),
+    height: Math.max(200, bars.length * 20 + 40),
+    marginLeft: 60,
+    grid: true,
+    x: { label: "value_new" },
+    y: { label: null, domain: bars.map((b) => b.label) },
+    marks: [
+      Plot.ruleX([0]),
+      Plot.barX(bars, {
+        y: "label",
+        x: "value",
+        fill: (d) => (d.value < 0 ? "var(--stat-danger)" : "var(--accent)"),
+      }),
+      Plot.text(bars, {
+        y: "label",
+        x: "value",
+        text: (d) => formatNumber(d.value),
+        dx: (d) => (d.value < 0 ? -4 : 4),
+        textAnchor: (d) => (d.value < 0 ? "end" : "start"),
+        fill: "var(--text-muted)",
+        fontSize: 11,
+      }),
+    ],
   });
 
   chartContainer.appendChild(chart);
