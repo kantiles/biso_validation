@@ -18,7 +18,7 @@ const DEP_NIV_GEO_VALUE = "dep";
 // "data_validation" state: only the table id and the resolved column names are
 // kept — no row cache, since rows are never fetched (see the module doc above).
 let bottomTableId = null;
-let bottomSpecialCols = { idIndicateur: null, value: null, nivGeo: null, annee: null, codeGeo: null };
+let bottomSpecialCols = { idIndicateur: null, valueNew: null, valueOld: null, nivGeo: null, annee: null, codeGeo: null };
 
 // The year currently chosen in the "Année" dropdown (see populateAnneeSelect) —
 // built from the distinct "annee" values of data_validation for the selected
@@ -32,7 +32,8 @@ export function setSelectedAnnee(value) {
 
 // Resolves data_validation's column ids via schema introspection (getTableColumns)
 // — no data row is fetched, so this is cheap no matter how many rows the table
-// holds. idIndicateur/annee (filtering), value (the stats/chart data), nivGeo
+// holds. idIndicateur/annee (filtering), valueNew (the stats/chart data),
+// valueOld (compared against valueNew for the écart distribution table), nivGeo
 // (the stats table's grouping column, and the chart's "dep" level filter) and
 // codeGeo (the chart's per-bar label) are needed, since no table is ever
 // rendered for data_validation.
@@ -46,20 +47,24 @@ export async function loadBottomTable(tableId) {
 
     bottomSpecialCols = {
       idIndicateur: findColumn(columns, "id_indicateur"),
-      value: findColumn(columns, "value"),
+      valueNew: findColumn(columns, "value_new"),
+      valueOld: findColumn(columns, "value_old"),
       nivGeo: findColumn(columns, "niv_geo"),
       annee: findColumn(columns, "annee"),
       codeGeo: findColumn(columns, "code_geo"),
     };
 
-    if (!bottomSpecialCols.value) {
-      setStatus("Attention : colonne \"value\" introuvable dans " + BOTTOM_TABLE_HINT + " : graphique indisponible.", "warn");
+    if (!bottomSpecialCols.valueNew) {
+      setStatus("Attention : colonne \"value_new\" introuvable dans " + BOTTOM_TABLE_HINT + " : graphique indisponible.", "warn");
       return;
     }
     if (!bottomSpecialCols.nivGeo) {
       setStatus("Attention : colonne \"niv_geo\" introuvable dans " + BOTTOM_TABLE_HINT + " : statistiques non ventilées, graphique indisponible.", "warn");
     } else if (!bottomSpecialCols.codeGeo) {
       setStatus("Attention : colonne \"code_geo\" introuvable dans " + BOTTOM_TABLE_HINT + " : graphique indisponible.", "warn");
+    }
+    if (!bottomSpecialCols.valueOld) {
+      setStatus("Attention : colonne \"value_old\" introuvable dans " + BOTTOM_TABLE_HINT + " : distribution des écarts indisponible.", "warn");
     }
 
     await populateAnneeSelect();
@@ -113,16 +118,17 @@ export async function populateAnneeSelect() {
   anneeSelect.value = selectedAnnee;
 }
 
-// Drives both the per-niv_geo stats table and the département-level bar chart
-// of the "value" column, computed entirely on the server with SQL queries
-// against data_validation — never all of its rows. Both are scoped to the
+// Drives the per-niv_geo stats table(s) — one for "value_new", and (when
+// "value_old" exists) one for the écart between them — and the département-level
+// bar chart of "value_new", computed entirely on the server with SQL queries
+// against data_validation — never all of its rows. All are scoped to the
 // selected indicator and (when data_validation has an "annee" column) the
 // selected year.
 export async function renderStatsAndChart() {
   chartContainer.innerHTML = "";
   valueStatsContainer.innerHTML = "";
 
-  const valueCol = bottomSpecialCols.value;
+  const valueCol = bottomSpecialCols.valueNew;
   if (!valueCol) return;
 
   const table = quoteIdent(bottomTableId);
@@ -130,7 +136,7 @@ export async function renderStatsAndChart() {
   const selectedIndicator = getSelectedIndicator();
 
   // Base WHERE (indicator + year only, NA rows included) — shared starting point
-  // for the stats table (which needs NA counts) and the chart (which
+  // for the stats table(s) (which need NA counts) and the chart (which
   // additionally filters to "dep"-level rows and excludes NA rows below).
   // Filtering by the selected indicator (when data_validation has that column)
   // is what keeps each query fast — it should hit an index on id_indicateur
@@ -146,11 +152,19 @@ export async function renderStatsAndChart() {
     baseArgs.push(selectedAnnee);
   }
 
-  await renderValueStatsTable(table, valueId, baseWhereParts, baseArgs);
+  await renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, "Distribution de value_new");
+
+  if (bottomSpecialCols.valueOld) {
+    // A NULL value_new or value_old naturally makes the écart NULL too, so it
+    // falls into the group's NA count the same way a missing value_new does above.
+    const ecartExpr = "(CAST(" + valueId + " AS REAL) - CAST(" + quoteIdent(bottomSpecialCols.valueOld) + " AS REAL))";
+    await renderValueStatsTable(table, ecartExpr, baseWhereParts, baseArgs, "Distribution de l'écart (value_new − value_old)");
+  }
+
   await renderDepartmentChartFromSql(table, valueId, baseWhereParts, baseArgs);
 }
 
-// Bar chart of "value" at département level ("niv_geo" = DEP_NIV_GEO_VALUE),
+// Bar chart of "value_new" at département level ("niv_geo" = DEP_NIV_GEO_VALUE),
 // one bar per "code_geo", for the selected indicator/year.
 async function renderDepartmentChartFromSql(table, valueId, baseWhereParts, baseArgs) {
   const nivGeoCol = bottomSpecialCols.nivGeo;
@@ -183,14 +197,16 @@ async function renderDepartmentChartFromSql(table, valueId, baseWhereParts, base
 
 // Distribution summary table: one row per distinct value of "niv_geo" (or a
 // single "Tous" row when that column doesn't exist), each with its row count,
-// NA count (rows whose "value" is blank), and — when the group has at least one
-// non-NA value — min/max/déciles/moyenne/médiane/quartiles/écart-type/IQR.
-// `baseWhereParts`/`baseArgs` scope every query to the selected indicator/year
-// and deliberately do NOT exclude NA rows, since the NA count itself is a
-// per-group aggregate here.
-async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs) {
-  valueStatsContainer.innerHTML = "";
-
+// NA count (rows whose `valueId` expression is blank), and — when the group has
+// at least one non-NA value — min/max/déciles/moyenne/médiane/quartiles/écart-type/IQR.
+// `valueId` is a SQL value expression (a quoted column, or an arithmetic
+// expression such as the value_new/value_old écart) — not necessarily a plain
+// column identifier. `baseWhereParts`/`baseArgs` scope every query to the
+// selected indicator/year and deliberately do NOT exclude NA rows, since the NA
+// count itself is a per-group aggregate here. Appends its table (under `title`)
+// to valueStatsContainer without clearing it first, so callers can render
+// several distributions (value_new, écart…) into the same container.
+async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, title) {
   const nivGeoCol = bottomSpecialCols.nivGeo;
   const nivGeoId = nivGeoCol ? quoteIdent(nivGeoCol) : null;
   const castValue = "CAST(" + valueId + " AS REAL)";
@@ -260,13 +276,19 @@ async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs) {
     });
   }
 
-  renderValueStatsRows(groups);
+  renderValueStatsRows(groups, title);
 }
 
 // Renders the groups computed by renderValueStatsTable() as a <table> — one row
-// per niv_geo.
-function renderValueStatsRows(groups) {
-  valueStatsContainer.innerHTML = "";
+// per niv_geo — under a heading naming which distribution it is. Appended to
+// valueStatsContainer rather than replacing its content, so multiple
+// distributions can stack.
+function renderValueStatsRows(groups, title) {
+  if (title) {
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    valueStatsContainer.appendChild(heading);
+  }
 
   const columns = [
     ["niv_geo", (g) => g.nivGeoLabel],
@@ -356,7 +378,7 @@ function renderDepartmentBars(bars) {
   const selectedIndicator = getSelectedIndicator();
 
   const title = document.createElement("h3");
-  title.textContent = "Value par département (dep)" +
+  title.textContent = "value_new par département (dep)" +
     (selectedIndicator ? " — " + selectedIndicator : "") +
     (selectedAnnee ? " — " + selectedAnnee : "");
   chartContainer.appendChild(title);
