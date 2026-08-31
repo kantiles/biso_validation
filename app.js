@@ -8,26 +8,30 @@
   //      is selected". Filters BOTH sections below.
   //   2. "main_validation" table — one row per indicator, with editable
   //      validation/commentaires cells. Filtered to the selected indicator.
-  //   3. Histogram of the "value" column from "data_validation", filtered to the
-  //      same selected indicator.
+  //   3. Year dropdown, distribution stats table (one row per "niv_geo" value,
+  //      including a NA count), and a bar chart of the "value" column at
+  //      département level ("niv_geo" = "dep", one bar per "code_geo") — all from
+  //      "data_validation", filtered to the selected indicator and year.
   //
   // Both table names are hardcoded (MAIN_TABLE_HINT / BOTTOM_TABLE_HINT) rather than
   // user-selectable — this widget is purpose-built for this document's schema.
   //
   // "data_validation" holds hundreds of millions of rows, so unlike main_validation
   // it is NEVER fetched into the browser with grist.docApi.fetchTable — that would
-  // pull the whole table over the wire just to draw one histogram. Instead the
-  // histogram is computed server-side with Grist's own SQL query API
+  // pull the whole table over the wire just to compute a summary. Instead
+  // everything in section 3 is computed server-side with Grist's own SQL query API
   // (POST /api/docs/:docId/sql, SELECT-only, running against the doc's underlying
   // SQLite storage), reached from the widget via an access token — see runSql().
-  // Only two small aggregate queries run per indicator change: one for MIN/MAX/COUNT,
-  // one for the binned counts. Column names for that table are resolved the same
-  // lightweight way, by querying Grist's own schema tables (_grist_Tables /
-  // _grist_Tables_column) instead of fetching a data row.
+  // Column names for that table are resolved the same lightweight way, by querying
+  // Grist's own schema tables (_grist_Tables / _grist_Tables_column) instead of
+  // fetching a data row.
 
   const MAIN_TABLE_HINT = "main_validation";
   const BOTTOM_TABLE_HINT = "data_validation";
-  const HISTOGRAM_BIN_COUNT = 10;
+
+  // The "niv_geo" value that selects département-level rows for the bar chart
+  // (see renderDepartmentChartFromSql).
+  const DEP_NIV_GEO_VALUE = "dep";
 
   // Sentinel used by the validation filter's "Non renseigné" option — validation
   // itself uses "" for its own "unset" choice (see buildValidationSelect), so an
@@ -35,6 +39,7 @@
   const VALIDATION_FILTER_EMPTY = "__empty__";
 
   const validationFilter = document.getElementById("validation-filter");
+  const anneeSelect = document.getElementById("annee-select");
   const indicatorSelect = document.getElementById("indicator-select");
   const indicatorPrevBtn = document.getElementById("indicator-prev");
   const indicatorNextBtn = document.getElementById("indicator-next");
@@ -58,12 +63,18 @@
   // "data_validation" state: only the table id and the resolved column names are
   // kept — no row cache, since rows are never fetched (see the SQL note above).
   let bottomTableId = null;
-  let bottomSpecialCols = { idIndicateur: null, value: null };
+  let bottomSpecialCols = { idIndicateur: null, value: null, nivGeo: null, annee: null, codeGeo: null };
 
   // The indicator currently chosen in the dropdown — drives both renderMainFromCache()
-  // and renderHistogramFromSql(). Always a string (Grist cell values are coerced with
+  // and renderStatsAndChart(). Always a string (Grist cell values are coerced with
   // String() before comparison, since a Reference display value could be numeric-looking).
   let selectedIndicator = "";
+
+  // The year currently chosen in the "Année" dropdown (see populateAnneeSelect) —
+  // built from the distinct "annee" values of data_validation for the selected
+  // indicator, most recent first, defaulting to the most recent. Always a string
+  // for the same reason as selectedIndicator.
+  let selectedAnnee = "";
 
   function setStatus(message, level) {
     statusEl.textContent = message || "";
@@ -104,8 +115,8 @@
 
   // Runs a read-only SQL SELECT against the document via Grist's REST SQL endpoint
   // and returns the result rows as plain objects (one per record). This is what
-  // lets the histogram aggregate hundreds of millions of rows on the server instead
-  // of downloading them.
+  // lets the stats/chart section aggregate hundreds of millions of rows on the
+  // server instead of downloading them.
   async function runSql(sql, args) {
     const { token, baseUrl } = await getAccessToken();
     const url = baseUrl + "/sql?auth=" + encodeURIComponent(token);
@@ -170,15 +181,25 @@
     indicatorPrevBtn.addEventListener("click", () => stepIndicator(-1));
     indicatorNextBtn.addEventListener("click", () => stepIndicator(1));
 
+    // Changing the year only re-filters/re-aggregates data_validation for the
+    // already-selected indicator — the indicator list itself is untouched.
+    anneeSelect.addEventListener("change", () => {
+      selectedAnnee = anneeSelect.value;
+      renderStatsAndChart().catch((err) => {
+        console.error(err);
+        setStatus("Erreur lors du calcul des statistiques : " + err.message, "error");
+      });
+    });
+
     // Restricts which indicators show up in the dropdown/nav to those whose
     // main_validation row has this validation value — rebuilding the list picks a
     // new default (first eligible indicator) whenever the current one drops out.
     validationFilter.addEventListener("change", () => {
       populateIndicatorSelect();
       renderMainFromCache();
-      renderHistogramFromSql().catch((err) => {
+      refreshForIndicator().catch((err) => {
         console.error(err);
-        setStatus("Erreur lors du calcul de l'histogramme : " + err.message, "error");
+        setStatus("Erreur lors du calcul des statistiques : " + err.message, "error");
       });
     });
 
@@ -417,13 +438,23 @@
     indicatorSelect.value = value;
     updateIndicatorNav();
     renderMainFromCache();
-    // Fire-and-forget: renderHistogramFromSql issues its own SQL requests and
-    // repaints #chart-container when they resolve. Errors are surfaced via
-    // setStatus rather than left as an unhandled rejection.
-    renderHistogramFromSql().catch((err) => {
+    // Fire-and-forget: refreshForIndicator issues its own SQL requests and
+    // repaints the year selector / stats / chart when they resolve. Errors are
+    // surfaced via setStatus rather than left as an unhandled rejection.
+    refreshForIndicator().catch((err) => {
       console.error(err);
-      setStatus("Erreur lors du calcul de l'histogramme : " + err.message, "error");
+      setStatus("Erreur lors du calcul des statistiques : " + err.message, "error");
     });
+  }
+
+  // Re-derives everything that depends on the selected indicator but isn't part of
+  // main_validation's cache: the year dropdown's options (distinct "annee" values
+  // for this indicator) and the stats table / chart below it. Used both when the
+  // indicator itself changes and when the Validation filter picks a new default
+  // indicator.
+  async function refreshForIndicator() {
+    await populateAnneeSelect();
+    await renderStatsAndChart();
   }
 
   // Keeps the "X / XX" position label and the prev/next buttons' disabled state in
@@ -448,8 +479,10 @@
 
   // Resolves data_validation's column ids via schema introspection (getTableColumns)
   // — no data row is fetched, so this is cheap no matter how many rows the table
-  // holds. Only idIndicateur (filtering) and value (the histogram's data) are
-  // needed, since no table is ever rendered for data_validation.
+  // holds. idIndicateur/annee (filtering), value (the stats/chart data), nivGeo
+  // (the stats table's grouping column, and the chart's "dep" level filter) and
+  // codeGeo (the chart's per-bar label) are needed, since no table is ever
+  // rendered for data_validation.
   async function loadBottomTable(tableId) {
     bottomTableId = tableId;
     chartContainer.innerHTML = "";
@@ -461,26 +494,77 @@
       bottomSpecialCols = {
         idIndicateur: findColumn(columns, "id_indicateur"),
         value: findColumn(columns, "value"),
+        nivGeo: findColumn(columns, "niv_geo"),
+        annee: findColumn(columns, "annee"),
+        codeGeo: findColumn(columns, "code_geo"),
       };
 
       if (!bottomSpecialCols.value) {
         setStatus("Attention : colonne \"value\" introuvable dans " + BOTTOM_TABLE_HINT + " : graphique indisponible.", "warn");
         return;
       }
+      if (!bottomSpecialCols.nivGeo) {
+        setStatus("Attention : colonne \"niv_geo\" introuvable dans " + BOTTOM_TABLE_HINT + " : statistiques non ventilées, graphique indisponible.", "warn");
+      } else if (!bottomSpecialCols.codeGeo) {
+        setStatus("Attention : colonne \"code_geo\" introuvable dans " + BOTTOM_TABLE_HINT + " : graphique indisponible.", "warn");
+      }
 
-      await renderHistogramFromSql();
+      await populateAnneeSelect();
+      await renderStatsAndChart();
     } catch (err) {
       console.error(err);
       setStatus("Erreur lors du chargement de la feuille : " + err.message, "error");
     }
   }
 
-  // Real frequency histogram of the "value" column (not one bar per row), computed
-  // entirely on the server with SQL aggregate queries against data_validation —
-  // never all of its rows. Values are bucketed into HISTOGRAM_BIN_COUNT equal-width
-  // bins between the MIN/MAX of the currently filtered rows. Also computes and
-  // renders the distribution summary (see renderValueStats) above the chart.
-  async function renderHistogramFromSql() {
+  // Builds the "Année" dropdown from the distinct "annee" values found in
+  // data_validation for the currently selected indicator, sorted from the most
+  // recent to the oldest, and defaults the selection to the most recent one.
+  async function populateAnneeSelect() {
+    anneeSelect.innerHTML = "";
+
+    const anneeCol = bottomSpecialCols.annee;
+    if (!anneeCol || !bottomTableId) {
+      anneeSelect.disabled = true;
+      selectedAnnee = "";
+      return;
+    }
+
+    anneeSelect.disabled = false;
+
+    const anneeId = quoteIdent(anneeCol);
+    const whereParts = [anneeId + " IS NOT NULL"];
+    const args = [];
+    if (bottomSpecialCols.idIndicateur && selectedIndicator) {
+      whereParts.push(quoteIdent(bottomSpecialCols.idIndicateur) + " = ?");
+      args.push(selectedIndicator);
+    }
+
+    const rows = await runSql(
+      "SELECT DISTINCT " + anneeId + " AS annee FROM " + quoteIdent(bottomTableId) +
+        " WHERE " + whereParts.join(" AND ") + " ORDER BY " + anneeId + " DESC",
+      args
+    );
+
+    const values = rows.map((row) => row.annee).filter((v) => v !== null && v !== undefined);
+
+    values.forEach((value) => {
+      const option = document.createElement("option");
+      option.value = String(value);
+      option.textContent = String(value);
+      anneeSelect.appendChild(option);
+    });
+
+    selectedAnnee = values.length > 0 ? String(values[0]) : "";
+    anneeSelect.value = selectedAnnee;
+  }
+
+  // Drives both the per-niv_geo stats table and the département-level bar chart
+  // of the "value" column, computed entirely on the server with SQL queries
+  // against data_validation — never all of its rows. Both are scoped to the
+  // selected indicator and (when data_validation has an "annee" column) the
+  // selected year.
+  async function renderStatsAndChart() {
     chartContainer.innerHTML = "";
     valueStatsContainer.innerHTML = "";
 
@@ -490,70 +574,190 @@
     const table = quoteIdent(bottomTableId);
     const valueId = quoteIdent(valueCol);
 
-    // WHERE clause + args shared by every query below. Filtering by the selected
-    // indicator (when data_validation has that column) is what keeps each query
-    // fast — it should hit an index on id_indicateur rather than scan the full
-    // hundreds-of-millions-row table.
-    const whereParts = [valueId + " IS NOT NULL"];
-    const filterArgs = [];
+    // Base WHERE (indicator + year only, NA rows included) — shared starting point
+    // for the stats table (which needs NA counts) and the chart (which
+    // additionally filters to "dep"-level rows and excludes NA rows below).
+    // Filtering by the selected indicator (when data_validation has that column)
+    // is what keeps each query fast — it should hit an index on id_indicateur
+    // rather than scan the full hundreds-of-millions-row table.
+    const baseWhereParts = [];
+    const baseArgs = [];
     if (bottomSpecialCols.idIndicateur && selectedIndicator) {
-      whereParts.push(quoteIdent(bottomSpecialCols.idIndicateur) + " = ?");
-      filterArgs.push(selectedIndicator);
+      baseWhereParts.push(quoteIdent(bottomSpecialCols.idIndicateur) + " = ?");
+      baseArgs.push(selectedIndicator);
     }
+    if (bottomSpecialCols.annee && selectedAnnee) {
+      baseWhereParts.push(quoteIdent(bottomSpecialCols.annee) + " = ?");
+      baseArgs.push(selectedAnnee);
+    }
+
+    await renderValueStatsTable(table, valueId, baseWhereParts, baseArgs);
+    await renderDepartmentChartFromSql(table, valueId, baseWhereParts, baseArgs);
+  }
+
+  // Bar chart of "value" at département level ("niv_geo" = DEP_NIV_GEO_VALUE),
+  // one bar per "code_geo", for the selected indicator/year.
+  async function renderDepartmentChartFromSql(table, valueId, baseWhereParts, baseArgs) {
+    const nivGeoCol = bottomSpecialCols.nivGeo;
+    const codeGeoCol = bottomSpecialCols.codeGeo;
+    if (!nivGeoCol || !codeGeoCol) return;
+
+    const codeGeoId = quoteIdent(codeGeoCol);
+    const whereParts = baseWhereParts.concat([
+      quoteIdent(nivGeoCol) + " = ?",
+      valueId + " IS NOT NULL",
+    ]);
+    const args = baseArgs.concat([DEP_NIV_GEO_VALUE]);
     const where = "WHERE " + whereParts.join(" AND ");
     const castValue = "CAST(" + valueId + " AS REAL)";
 
-    // One pass over the (filtered) rows for everything that doesn't require sorted
-    // order: count, min/max, and the mean/sum-of-squares needed for the standard
-    // deviation (variance = E[x²] − E[x]², computed after the query since SQLite
-    // has no built-in sqrt()).
-    const [stats] = await runSql(
-      "SELECT MIN(" + castValue + ") AS mn, MAX(" + castValue + ") AS mx, COUNT(*) AS cnt, " +
-        "AVG(" + castValue + ") AS mean, AVG(" + castValue + " * " + castValue + ") AS meanSq " +
-        "FROM " + table + " " + where,
-      filterArgs
+    const rows = await runSql(
+      "SELECT " + codeGeoId + " AS g, " + castValue + " AS v FROM " + table + " " + where +
+        " ORDER BY " + codeGeoId,
+      args
     );
 
-    if (!stats || !stats.cnt || stats.mn === null || stats.mx === null) return;
+    if (rows.length === 0) return;
 
-    const min = Number(stats.mn);
-    const max = Number(stats.mx);
-    const count = Number(stats.cnt);
-    const mean = Number(stats.mean);
-    const variance = Math.max(0, Number(stats.meanSq) - mean * mean);
-    const stdDev = Math.sqrt(variance);
+    const bars = rows
+      .filter((row) => row.g !== null && row.g !== undefined)
+      .map((row) => ({ label: String(row.g), value: Number(row.v) }));
 
-    const binCount = HISTOGRAM_BIN_COUNT;
-    const range = max - min;
+    renderDepartmentBars(bars);
+  }
 
-    const bins = new Array(binCount).fill(0);
-    let quantiles;
+  // Distribution summary table: one row per distinct value of "niv_geo" (or a
+  // single "Tous" row when that column doesn't exist), each with its row count,
+  // NA count (rows whose "value" is blank), and — when the group has at least one
+  // non-NA value — min/max/déciles/moyenne/médiane/quartiles/écart-type/IQR.
+  // `baseWhereParts`/`baseArgs` scope every query to the selected indicator/year
+  // and deliberately do NOT exclude NA rows, since the NA count itself is a
+  // per-group aggregate here.
+  async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs) {
+    valueStatsContainer.innerHTML = "";
 
-    if (range === 0) {
-      // Every value is identical — a single histogram bin avoids a divide-by-zero
-      // below, and every quantile trivially equals that value (no need to sort).
-      bins[0] = count;
-      quantiles = { d1: min, q1: min, median: min, q3: min, d9: min };
-    } else {
-      // SQLite's multi-argument min()/max() are scalar functions here (not
-      // aggregates) — this clamps the top bin the same way the old client-side
-      // `if (idx >= binCount) idx = binCount - 1` did, since the max value would
-      // otherwise compute to bin index binCount (one past the last bin).
-      const binRows = await runSql(
-        "SELECT MIN(CAST((( " + castValue + " - ?) / ?) * ? AS INT), ?) AS bin, COUNT(*) AS cnt " +
-          "FROM " + table + " " + where + " GROUP BY bin ORDER BY bin",
-        [min, range, binCount, binCount - 1, ...filterArgs]
-      );
-      binRows.forEach((row) => {
-        const idx = Number(row.bin);
-        if (idx >= 0 && idx < binCount) bins[idx] = Number(row.cnt);
+    const nivGeoCol = bottomSpecialCols.nivGeo;
+    const nivGeoId = nivGeoCol ? quoteIdent(nivGeoCol) : null;
+    const castValue = "CAST(" + valueId + " AS REAL)";
+    const where = baseWhereParts.length > 0 ? "WHERE " + baseWhereParts.join(" AND ") : "";
+
+    const groupRows = await runSql(
+      "SELECT " + (nivGeoId ? nivGeoId + " AS g, " : "") +
+        "COUNT(*) AS total, " +
+        "SUM(CASE WHEN " + valueId + " IS NULL THEN 1 ELSE 0 END) AS naCount, " +
+        "MIN(" + castValue + ") AS mn, MAX(" + castValue + ") AS mx, " +
+        "AVG(" + castValue + ") AS mean, AVG(" + castValue + " * " + castValue + ") AS meanSq " +
+        "FROM " + table + " " + where +
+        (nivGeoId ? " GROUP BY " + nivGeoId + " ORDER BY " + nivGeoId : ""),
+      baseArgs
+    );
+
+    if (groupRows.length === 0) return;
+
+    const groups = [];
+    for (const row of groupRows) {
+      const rawGeo = nivGeoId ? row.g : undefined;
+      const total = Number(row.total || 0);
+      const naCount = Number(row.naCount || 0);
+      const validCount = total - naCount;
+
+      let min = null, max = null, mean = null, stdDev = null;
+      let quantiles = { d1: null, q1: null, median: null, q3: null, d9: null };
+
+      if (validCount > 0 && row.mn !== null && row.mx !== null) {
+        min = Number(row.mn);
+        max = Number(row.mx);
+        mean = Number(row.mean);
+        const variance = Math.max(0, Number(row.meanSq) - mean * mean);
+        stdDev = Math.sqrt(variance);
+
+        if (max - min === 0) {
+          // Every value in this group is identical — no need to sort to know the
+          // quantiles.
+          quantiles = { d1: min, q1: min, median: min, q3: min, d9: min };
+        } else {
+          const groupWhereParts = baseWhereParts.concat([valueId + " IS NOT NULL"]);
+          const groupArgs = baseArgs.slice();
+          if (nivGeoId) {
+            if (rawGeo === null || rawGeo === undefined) {
+              groupWhereParts.push(nivGeoId + " IS NULL");
+            } else {
+              groupWhereParts.push(nivGeoId + " = ?");
+              groupArgs.push(rawGeo);
+            }
+          }
+          const groupWhere = "WHERE " + groupWhereParts.join(" AND ");
+          quantiles = await fetchQuantiles(table, castValue, groupWhere, groupArgs, validCount);
+        }
+      }
+
+      groups.push({
+        nivGeoLabel: nivGeoCol
+          ? rawGeo === null || rawGeo === undefined || rawGeo === "" ? "(vide)" : String(rawGeo)
+          : "Tous",
+        total,
+        naCount,
+        min,
+        max,
+        mean,
+        stdDev,
+        ...quantiles,
       });
-
-      quantiles = await fetchQuantiles(table, castValue, where, filterArgs, count);
     }
 
-    renderValueStats({ min, max, count, mean, stdDev, ...quantiles });
-    renderHistogramBins(bins, min, max);
+    renderValueStatsRows(groups);
+  }
+
+  // Renders the groups computed by renderValueStatsTable() as a <table> — one row
+  // per niv_geo.
+  function renderValueStatsRows(groups) {
+    valueStatsContainer.innerHTML = "";
+
+    const columns = [
+      ["niv_geo", (g) => g.nivGeoLabel],
+      ["Effectif", (g) => String(g.total)],
+      ["NA", (g) => String(g.naCount)],
+      ["Min", (g) => formatNumberOrDash(g.min)],
+      ["Max", (g) => formatNumberOrDash(g.max)],
+      ["Décile 1", (g) => formatNumberOrDash(g.d1)],
+      ["Quartile 1", (g) => formatNumberOrDash(g.q1)],
+      ["Médiane", (g) => formatNumberOrDash(g.median)],
+      ["Quartile 3", (g) => formatNumberOrDash(g.q3)],
+      ["Décile 9", (g) => formatNumberOrDash(g.d9)],
+      ["Moyenne", (g) => formatNumberOrDash(g.mean)],
+      ["Écart-type", (g) => formatNumberOrDash(g.stdDev)],
+      ["Écart interquartile", (g) => (g.q1 === null || g.q3 === null ? "—" : formatNumber(g.q3 - g.q1))],
+    ];
+
+    const table = document.createElement("table");
+
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    columns.forEach(([header]) => {
+      const th = document.createElement("th");
+      th.textContent = header;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    groups.forEach((group) => {
+      const tr = document.createElement("tr");
+      columns.forEach(([, getValue]) => {
+        const td = document.createElement("td");
+        td.textContent = getValue(group);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+
+    valueStatsContainer.appendChild(table);
+  }
+
+  function formatNumberOrDash(n) {
+    return n === null || n === undefined ? "—" : formatNumber(n);
   }
 
   // Nearest-rank D1/Q1/median/Q3/D9 in a single sorted pass over the filtered rows,
@@ -593,62 +797,22 @@
     };
   }
 
-  // Renders the "min / max / D1 / D9 / mean / median / Q1 / Q3 / std dev / IQR"
-  // summary strip above the histogram. IQR (Q3 − Q1) is derived client-side; every
-  // other figure comes straight from the SQL aggregates in renderHistogramFromSql.
-  function renderValueStats(s) {
-    valueStatsContainer.innerHTML = "";
-    if (s.q1 === null || s.q3 === null) return;
-
-    const items = [
-      ["Min", s.min],
-      ["Max", s.max],
-      ["Décile 1", s.d1],
-      ["Décile 9", s.d9],
-      ["Moyenne", s.mean],
-      ["Médiane", s.median],
-      ["Quartile 1", s.q1],
-      ["Quartile 3", s.q3],
-      ["Écart-type", s.stdDev],
-      ["Écart interquartile", s.q3 - s.q1],
-    ];
-
-    items.forEach(([label, value]) => {
-      const item = document.createElement("div");
-      item.className = "value-stat";
-
-      const valueEl = document.createElement("span");
-      valueEl.className = "value-stat-value";
-      valueEl.textContent = formatNumber(value);
-
-      const labelEl = document.createElement("span");
-      labelEl.className = "value-stat-label";
-      labelEl.textContent = label;
-
-      item.appendChild(valueEl);
-      item.appendChild(labelEl);
-      valueStatsContainer.appendChild(item);
-    });
-  }
-
-  function renderHistogramBins(bins, min, max) {
-    const binCount = bins.length;
-    const range = max - min;
-    const maxCount = Math.max(...bins, 1);
-    const binWidth = range === 0 ? 0 : range / binCount;
+  // One bar per département ("code_geo"), width proportional to |value| against
+  // the largest |value| among the bars — handles the case where "value" can be
+  // negative, since a bar's track can only grow one way.
+  function renderDepartmentBars(bars) {
+    const maxAbsValue = Math.max(...bars.map((b) => Math.abs(b.value)), 1);
 
     const title = document.createElement("h3");
-    title.textContent = "Distribution de value" + (selectedIndicator ? " — " + selectedIndicator : "");
+    title.textContent = "Value par département (dep)" +
+      (selectedIndicator ? " — " + selectedIndicator : "") +
+      (selectedAnnee ? " — " + selectedAnnee : "");
     chartContainer.appendChild(title);
 
     const chart = document.createElement("div");
     chart.className = "chart";
 
-    bins.forEach((count, i) => {
-      const rangeStart = range === 0 ? min : min + i * binWidth;
-      const rangeEnd = range === 0 ? max : min + (i + 1) * binWidth;
-      const label = range === 0 ? formatNumber(min) : formatNumber(rangeStart) + " – " + formatNumber(rangeEnd);
-
+    bars.forEach(({ label, value }) => {
       const row = document.createElement("div");
       row.className = "chart-row";
 
@@ -660,12 +824,12 @@
       track.className = "chart-bar-track";
       const bar = document.createElement("div");
       bar.className = "chart-bar";
-      bar.style.width = (count / maxCount) * 100 + "%";
+      bar.style.width = (Math.abs(value) / maxAbsValue) * 100 + "%";
       track.appendChild(bar);
 
       const countEl = document.createElement("span");
       countEl.className = "chart-count";
-      countEl.textContent = String(count);
+      countEl.textContent = formatNumber(value);
 
       row.appendChild(labelEl);
       row.appendChild(track);

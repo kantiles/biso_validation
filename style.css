@@ -1,8 +1,9 @@
 /* Grist Custom Widget stylesheet — pairs with app.js/index.html.
    Layout produced: indicator dropdown (.toolbar) > status banner (#status) >
-   main_validation table (.panel #main-table-container) > histogram (.panel
-   #chart-container). Colors are theme tokens on :root so a dark-mode variant could
-   be added later via a prefers-color-scheme override without touching selectors. */
+   main_validation table (.panel #main-table-container) > year dropdown (.toolbar)
+   + stats table (#value-stats) + département bar chart (.panel #chart-container).
+   Colors are theme tokens on :root so a dark-mode variant could be added later via
+   a prefers-color-scheme override without touching selectors. */
 
 :root {
   color-scheme: light;
@@ -80,9 +81,9 @@ body {
   color: var(--text-muted);
 }
 
-/* Wraps each top-level block (the main_validation table, the histogram) with a
-   separating rule; the last panel drops its border so the page doesn't end on a
-   stray line. */
+/* Wraps each top-level block (the main_validation table, the stats/chart section)
+   with a separating rule; the last panel drops its border so the page doesn't end
+   on a stray line. */
 .panel {
   margin-bottom: 24px;
   padding-bottom: 16px;
@@ -189,41 +190,25 @@ body {
   display: none;
 }
 
-/* Distribution summary strip (min/max/déciles/moyenne/médiane/quartiles/écart-type/
-   IQR) rendered by renderValueStats() above the histogram. */
+/* Distribution summary table (one row per niv_geo: effectif/NA/min/max/déciles/
+   moyenne/médiane/quartiles/écart-type/IQR) rendered by renderValueStatsTable()
+   above the département bar chart. */
 .value-stats:empty {
   display: none;
 }
 
 .value-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
   margin-bottom: 16px;
+  overflow-x: auto;
 }
 
-.value-stat {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-alt);
-  min-width: 92px;
-}
-
-.value-stat-value {
-  font-weight: 700;
-  font-size: 15px;
-  color: var(--text);
+.value-stats table {
   font-variant-numeric: tabular-nums;
 }
 
-.value-stat-label {
-  font-size: 11px;
-  color: var(--text-muted);
+.value-stats td,
+.value-stats th {
+  white-space: nowrap;
 }
 
 .chart-container h3 {
@@ -239,7 +224,7 @@ body {
   margin-bottom: 16px;
 }
 
-/* One row per histogram bin: [bin range label] [bar] [count]. */
+/* One row per département bar: [code_geo label] [bar] [value]. */
 .chart-row {
   display: grid;
   grid-template-columns: minmax(80px, 160px) 1fr 32px;
