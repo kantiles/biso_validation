@@ -12,49 +12,55 @@
 // fetching a data row.
 "use strict";
 
-// Access tokens from grist.docApi.getAccessToken are short-lived (ttlMsecs) but
-// meant to be reused across calls rather than fetched per-query; cached here and
-// refreshed a few seconds before expiry.
-let cachedAccessToken = null;
+window.BISO = window.BISO || {};
 
-async function getAccessToken() {
-  if (!cachedAccessToken || Date.now() > cachedAccessToken.expiresAt) {
-    const result = await grist.docApi.getAccessToken({ readOnly: true });
-    cachedAccessToken = { ...result, expiresAt: Date.now() + result.ttlMsecs - 5000 };
-  }
-  return cachedAccessToken;
-}
+window.BISO.gristApi = (function () {
+  // Access tokens from grist.docApi.getAccessToken are short-lived (ttlMsecs) but
+  // meant to be reused across calls rather than fetched per-query; cached here and
+  // refreshed a few seconds before expiry.
+  let cachedAccessToken = null;
 
-// Runs a read-only SQL SELECT against the document via Grist's REST SQL endpoint
-// and returns the result rows as plain objects (one per record). This is what
-// lets the stats/chart section aggregate hundreds of millions of rows on the
-// server instead of downloading them.
-export async function runSql(sql, args) {
-  const { token, baseUrl } = await getAccessToken();
-  const url = baseUrl + "/sql?auth=" + encodeURIComponent(token);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sql, args: args || [], timeout: 20000 }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error("Requête SQL échouée (" + response.status + ") " + text);
+  async function getAccessToken() {
+    if (!cachedAccessToken || Date.now() > cachedAccessToken.expiresAt) {
+      const result = await grist.docApi.getAccessToken({ readOnly: true });
+      cachedAccessToken = { ...result, expiresAt: Date.now() + result.ttlMsecs - 5000 };
+    }
+    return cachedAccessToken;
   }
 
-  const body = await response.json();
-  return (body.records || []).map((record) => record.fields);
-}
+  // Runs a read-only SQL SELECT against the document via Grist's REST SQL endpoint
+  // and returns the result rows as plain objects (one per record). This is what
+  // lets the stats/chart section aggregate hundreds of millions of rows on the
+  // server instead of downloading them.
+  async function runSql(sql, args) {
+    const { token, baseUrl } = await getAccessToken();
+    const url = baseUrl + "/sql?auth=" + encodeURIComponent(token);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sql, args: args || [], timeout: 20000 }),
+    });
 
-// Lists a table's column ids by querying Grist's own schema tables rather than
-// fetching a row of real data — cheap regardless of the table's row count.
-export async function getTableColumns(tableId) {
-  const rows = await runSql(
-    "SELECT c.colId AS colId FROM _grist_Tables_column c " +
-      "JOIN _grist_Tables t ON t.id = c.parentId " +
-      "WHERE t.tableId = ?",
-    [tableId]
-  );
-  return rows.map((row) => row.colId).filter((colId) => colId !== "manualSort");
-}
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error("Requête SQL échouée (" + response.status + ") " + text);
+    }
+
+    const body = await response.json();
+    return (body.records || []).map((record) => record.fields);
+  }
+
+  // Lists a table's column ids by querying Grist's own schema tables rather than
+  // fetching a row of real data — cheap regardless of the table's row count.
+  async function getTableColumns(tableId) {
+    const rows = await runSql(
+      "SELECT c.colId AS colId FROM _grist_Tables_column c " +
+        "JOIN _grist_Tables t ON t.id = c.parentId " +
+        "WHERE t.tableId = ?",
+      [tableId]
+    );
+    return rows.map((row) => row.colId).filter((colId) => colId !== "manualSort");
+  }
+
+  return { runSql, getTableColumns };
+})();
