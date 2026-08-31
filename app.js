@@ -29,6 +29,12 @@
   const BOTTOM_TABLE_HINT = "data_validation";
   const HISTOGRAM_BIN_COUNT = 10;
 
+  // Sentinel used by the validation filter's "Non renseigné" option — validation
+  // itself uses "" for its own "unset" choice (see buildValidationSelect), so an
+  // empty string can't also mean "no filter" here without ambiguity.
+  const VALIDATION_FILTER_EMPTY = "__empty__";
+
+  const validationFilter = document.getElementById("validation-filter");
   const indicatorSelect = document.getElementById("indicator-select");
   const indicatorPrevBtn = document.getElementById("indicator-prev");
   const indicatorNextBtn = document.getElementById("indicator-next");
@@ -159,6 +165,18 @@
     indicatorPrevBtn.addEventListener("click", () => stepIndicator(-1));
     indicatorNextBtn.addEventListener("click", () => stepIndicator(1));
 
+    // Restricts which indicators show up in the dropdown/nav to those whose
+    // main_validation row has this validation value — rebuilding the list picks a
+    // new default (first eligible indicator) whenever the current one drops out.
+    validationFilter.addEventListener("change", () => {
+      populateIndicatorSelect();
+      renderMainFromCache();
+      renderHistogramFromSql().catch((err) => {
+        console.error(err);
+        setStatus("Erreur lors du calcul de l'histogramme : " + err.message, "error");
+      });
+    });
+
     try {
       const tableIds = await grist.docApi.listTables();
 
@@ -279,9 +297,23 @@
     renderTable(mainTableContainer, displayColumns, rows, mainSpecialCols, mainTableId);
   }
 
+  // Whether a main_validation row's "validation" cell matches the global
+  // validation filter — "" (Tous) always matches, VALIDATION_FILTER_EMPTY matches
+  // an unset/blank cell, anything else matches by exact value ("Oui"/"Non").
+  function matchesValidationFilter(row) {
+    const filterValue = validationFilter.value;
+    if (!filterValue) return true;
+    if (!mainSpecialCols.validation) return true;
+
+    const cellValue = row[mainSpecialCols.validation] || "";
+    if (filterValue === VALIDATION_FILTER_EMPTY) return cellValue === "";
+    return cellValue === filterValue;
+  }
+
   // Builds the indicator dropdown from the distinct id_indicateur values found in
-  // main_validation, sorted alphabetically, and defaults the selection to the
-  // first one (i.e. the alphabetically-first indicator) — per spec, "prend par
+  // main_validation, restricted to rows matching the "Validation" filter (see
+  // matchesValidationFilter), sorted alphabetically, and defaults the selection to
+  // the first one (i.e. the alphabetically-first indicator) — per spec, "prend par
   // défaut la première valeur".
   function populateIndicatorSelect() {
     indicatorSelect.innerHTML = "";
@@ -303,6 +335,7 @@
     mainRows.forEach((row) => {
       const v = row[col];
       if (v === null || v === undefined || v === "") return;
+      if (!matchesValidationFilter(row)) return;
       const s = String(v);
       if (!seen.has(s)) {
         seen.add(s);

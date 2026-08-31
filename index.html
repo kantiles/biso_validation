@@ -9,6 +9,14 @@
 </head>
 <body>
   <div class="toolbar">
+    <label for="validation-filter">Validation</label>
+    <select id="validation-filter">
+      <option value="">Tous</option>
+      <option value="Oui">Oui</option>
+      <option value="Non">Non</option>
+      <option value="__empty__">Non renseigné</option>
+    </select>
+
     <label for="indicator-select">Indicateur</label>
     <button id="indicator-prev" type="button" class="nav-button" aria-label="Précédent"><strong>&lt;</strong></button>
     <select id="indicator-select"></select>
@@ -19,7 +27,6 @@
   <div id="status" class="status"></div>
 
   <section class="panel">
-    <h2>main_validation</h2>
     <div id="main-table-container"></div>
   </section>
 
