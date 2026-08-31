@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Validation BISO</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://grist.numerique.gouv.fr/grist-plugin-api.js"></script>
+</head>
+<body>
+  <div class="toolbar">
+    <label for="sheet-select">Feuille</label>
+    <select id="sheet-select"></select>
+
+    <label for="indicator-filter">Filtrer sur id_indicateur</label>
+    <input type="text" id="indicator-filter" placeholder="ex: IND-001" />
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <div id="table-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
