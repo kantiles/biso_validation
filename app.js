@@ -1,23 +1,46 @@
 (function () {
   "use strict";
 
+  // Grist Custom Widget for BISO validation.
+  //
+  // Layout (see index.html):
+  //   1. Indicator dropdown (top) — the single source of truth for "which indicator
+  //      is selected". Filters BOTH sections below.
+  //   2. "main_validation" table — one row per indicator, with editable
+  //      validation/commentaires cells. Filtered to the selected indicator.
+  //   3. Histogram of the "value" column from "data_validation", filtered to the
+  //      same selected indicator.
+  //
+  // Both table names are hardcoded (MAIN_TABLE_HINT / BOTTOM_TABLE_HINT) rather than
+  // user-selectable — this widget is purpose-built for this document's schema.
+
   const MAIN_TABLE_HINT = "main_validation";
   const BOTTOM_TABLE_HINT = "data_validation";
   const HISTOGRAM_BIN_COUNT = 10;
 
   const indicatorSelect = document.getElementById("indicator-select");
+  const indicatorPrevBtn = document.getElementById("indicator-prev");
+  const indicatorNextBtn = document.getElementById("indicator-next");
+  const indicatorPositionEl = document.getElementById("indicator-position");
   const statusEl = document.getElementById("status");
   const chartContainer = document.getElementById("chart-container");
   const mainTableContainer = document.getElementById("main-table-container");
 
+  // "main_validation" state: the table id (needed for UpdateRecord calls), the
+  // resolved column names for the fields we treat specially, and the cached rows
+  // (avoids refetching from Grist on every filter change).
   let mainTableId = null;
   let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null };
   let mainRows = [];
 
+  // Same idea for "data_validation".
   let bottomTableId = null;
   let bottomSpecialCols = { idIndicateur: null, validation: null, commentaires: null, value: null };
   let bottomRows = [];
 
+  // The indicator currently chosen in the dropdown — drives both renderMainFromCache()
+  // and renderBottomFromCache(). Always a string (Grist cell values are coerced with
+  // String() before comparison, since a Reference display value could be numeric-looking).
   let selectedIndicator = "";
 
   function setStatus(message, level) {
@@ -25,6 +48,9 @@
     statusEl.className = message ? "status " + (level || "info") : "status";
   }
 
+  // Column names are matched case/punctuation-insensitively so small naming drift in
+  // the Grist document (e.g. "Id_Indicateur" vs "id_indicateur") doesn't break the
+  // widget.
   function normalize(name) {
     return String(name).toLowerCase().replace(/[^a-z0-9]/g, "");
   }
@@ -35,6 +61,9 @@
   }
 
   async function init() {
+    // A Custom Widget only receives the Grist API (`grist`) when embedded in an
+    // iframe by Grist itself. Opening index.html directly (window === window.top)
+    // means there is no document to talk to.
     if (window.self === window.top) {
       setStatus(
         "Ce widget doit être ajouté comme Custom Widget dans un document Grist (accès \"Full document\") " +
@@ -53,13 +82,17 @@
       return;
     }
 
+    // requiredAccess: "full" is needed because we write back to the document
+    // (UpdateRecord in updateCell) and read arbitrary tables (listTables/fetchTable).
     grist.ready({ requiredAccess: "full" });
 
+    // Changing the indicator (via the dropdown or the prev/next buttons) only
+    // re-filters already-cached rows — no refetch.
     indicatorSelect.addEventListener("change", () => {
-      selectedIndicator = indicatorSelect.value;
-      renderMainFromCache();
-      renderBottomFromCache();
+      selectIndicator(indicatorSelect.value);
     });
+    indicatorPrevBtn.addEventListener("click", () => stepIndicator(-1));
+    indicatorNextBtn.addEventListener("click", () => stepIndicator(1));
 
     try {
       const tableIds = await grist.docApi.listTables();
@@ -69,6 +102,8 @@
         setStatus("Table \"" + MAIN_TABLE_HINT + "\" introuvable dans ce document.", "error");
         return;
       }
+      // Load main_validation first: it populates the indicator dropdown and its
+      // default value, which loadBottomTable's initial render depends on.
       await loadMainTable(mainMatch);
 
       const bottomMatch = tableIds.find((id) => normalize(id) === normalize(BOTTOM_TABLE_HINT));
@@ -89,13 +124,19 @@
     mainTableContainer.innerHTML = "";
 
     const data = await grist.docApi.fetchTable(tableId);
+    // fetchTable returns one array per column, keyed by column id; "id" (row id) and
+    // "manualSort" (Grist's internal row-order column) aren't real data columns.
     const columns = Object.keys(data).filter((k) => k !== "id" && k !== "manualSort");
 
-    // id_indicateur is now a Reference to documentation_biso: the raw column holds row
-    // ids (1, 2, 3…), Grist stores the reference's display text in an auto-generated
-    // gristHelper_Display* column, and the libellé comes from a lookup column whose
-    // name contains "Libelle_Indicateur". Fall back to the raw column if this table
-    // isn't a reference (e.g. still plain text codes).
+    // id_indicateur is a Reference column pointing at documentation_biso: the raw
+    // column here holds row ids (1, 2, 3…), not the human-readable code. When a
+    // Reference's visible column is configured in Grist, fetchTable also returns an
+    // auto-generated "gristHelper_DisplayN" column containing that display text —
+    // this is what actually matches data_validation's plain-text id_indicateur values,
+    // so it's what we filter and display on. The libellé comes from a separate lookup
+    // column added in Grist whose name contains "Libelle_Indicateur".
+    // If id_indicateur is ever reverted to a plain text/code column (no reference),
+    // there's no gristHelper_Display* column and we fall back to it directly.
     const refDisplayCol = columns.find((c) => normalize(c).startsWith("gristhelperdisplay"));
     const libelleCol = columns.find((c) => normalize(c).includes("libelleindicateur"));
     const rawIdCol = findColumn(columns, "id_indicateur");
@@ -107,6 +148,9 @@
       commentaires: findColumn(columns, "commentaires"),
     };
 
+    // fetchTable's column-of-arrays shape is turned into one object per row (row-of-
+    // objects) since the rest of the widget (filtering, rendering, cache lookup by
+    // row id) is much simpler to write against rows.
     const rowCount = data.id ? data.id.length : 0;
     const rows = [];
     for (let i = 0; i < rowCount; i++) {
@@ -134,6 +178,8 @@
       setStatus("", "info");
     }
 
+    // Order matters: populateIndicatorSelect sets selectedIndicator (default = first
+    // indicator found), and renderMainFromCache reads selectedIndicator to filter.
     populateIndicatorSelect();
     renderMainFromCache();
   }
@@ -146,6 +192,11 @@
       rows = rows.filter((row) => String(row[col]) === selectedIndicator);
     }
 
+    // The table is rendered from a fixed, explicit list of {key, header} pairs
+    // (rather than every raw column from Grist) so extra technical columns —
+    // gristHelper_Display*, the raw id_indicateur reference, "etat", etc. — stay
+    // hidden and the header text stays human-readable regardless of the underlying
+    // Grist column names.
     const displayColumns = [];
     if (mainSpecialCols.idIndicateur) {
       displayColumns.push({ key: mainSpecialCols.idIndicateur, header: "id_indicateur" });
@@ -163,13 +214,20 @@
     renderTable(mainTableContainer, displayColumns, rows, mainSpecialCols, mainTableId);
   }
 
+  // Builds the indicator dropdown from the distinct id_indicateur values found in
+  // main_validation, sorted alphabetically, and defaults the selection to the
+  // first one (i.e. the alphabetically-first indicator) — per spec, "prend par
+  // défaut la première valeur".
   function populateIndicatorSelect() {
     indicatorSelect.innerHTML = "";
 
     const col = mainSpecialCols.idIndicateur;
     if (!col) {
       indicatorSelect.disabled = true;
+      indicatorPrevBtn.disabled = true;
+      indicatorNextBtn.disabled = true;
       selectedIndicator = "";
+      updateIndicatorNav();
       return;
     }
 
@@ -187,6 +245,8 @@
       }
     });
 
+    values.sort((a, b) => a.localeCompare(b, "fr", { numeric: true, sensitivity: "base" }));
+
     values.forEach((value) => {
       const option = document.createElement("option");
       option.value = value;
@@ -196,8 +256,54 @@
 
     selectedIndicator = values.length > 0 ? values[0] : "";
     indicatorSelect.value = selectedIndicator;
+    updateIndicatorNav();
   }
 
+  // Moves the selection by `delta` positions (-1 = précédent, +1 = suivant) within
+  // the dropdown's (already alphabetically sorted) option list, clamped to the
+  // first/last entry.
+  function stepIndicator(delta) {
+    const options = Array.from(indicatorSelect.options);
+    if (options.length === 0) return;
+
+    const currentIndex = options.findIndex((opt) => opt.value === selectedIndicator);
+    const nextIndex = Math.min(options.length - 1, Math.max(0, currentIndex + delta));
+    selectIndicator(options[nextIndex].value);
+  }
+
+  function selectIndicator(value) {
+    selectedIndicator = value;
+    indicatorSelect.value = value;
+    updateIndicatorNav();
+    renderMainFromCache();
+    renderBottomFromCache();
+  }
+
+  // Keeps the "X / XX" position label and the prev/next buttons' disabled state in
+  // sync with the current selection.
+  function updateIndicatorNav() {
+    const options = Array.from(indicatorSelect.options);
+    const total = options.length;
+
+    if (total === 0) {
+      indicatorPositionEl.textContent = "";
+      indicatorPrevBtn.disabled = true;
+      indicatorNextBtn.disabled = true;
+      return;
+    }
+
+    const currentIndex = options.findIndex((opt) => opt.value === selectedIndicator);
+    const position = currentIndex === -1 ? 0 : currentIndex + 1;
+    indicatorPositionEl.textContent = position + " / " + total;
+    indicatorPrevBtn.disabled = currentIndex <= 0;
+    indicatorNextBtn.disabled = currentIndex === -1 || currentIndex >= total - 1;
+  }
+
+  // data_validation is only ever used for the histogram (no table is rendered for
+  // it), so bottomSpecialCols only needs idIndicateur (filtering) and value
+  // (the histogram's data). validation/commentaires are resolved too for parity /
+  // in case the table is reused for an editable view later, but nothing renders
+  // them today.
   async function loadBottomTable(tableId) {
     bottomTableId = tableId;
     bottomRows = [];
@@ -243,6 +349,10 @@
     renderHistogram(rows);
   }
 
+  // Real frequency histogram of the "value" column (not one bar per row): values
+  // are bucketed into HISTOGRAM_BIN_COUNT equal-width bins between min and max of
+  // the *currently filtered* rows, and each bar shows how many rows fall in that
+  // bin.
   function renderHistogram(rows) {
     chartContainer.innerHTML = "";
 
@@ -268,9 +378,12 @@
     values.forEach((v) => {
       let idx;
       if (range === 0) {
+        // Every value is identical — a single bin avoids a divide-by-zero below.
         idx = 0;
       } else {
         idx = Math.floor(((v - min) / range) * binCount);
+        // The max value would otherwise map to bin index binCount (out of range),
+        // since ((max - min) / range) * binCount === binCount exactly.
         if (idx >= binCount) idx = binCount - 1;
       }
       bins[idx]++;
@@ -322,6 +435,11 @@
     return Number.isInteger(n) ? String(n) : n.toFixed(2);
   }
 
+  // Generic table renderer shared by any table in the widget (currently only
+  // main_validation). `displayColumns` is a [{key, header}] list — `key` looks up
+  // the value in the row object, `header` is what's shown in <th>. `specialCols`
+  // and `tableId` are passed through so validation/commentaires cells can render as
+  // editable inputs that write back to the right Grist table.
   function renderTable(container, displayColumns, rows, specialCols, tableId) {
     container.innerHTML = "";
 
@@ -372,6 +490,8 @@
     return String(value);
   }
 
+  // Fixed "Oui" / "Non" / "—" (empty) choices — validation is a tri-state flag, not
+  // free text, so a <select> is used instead of a text input.
   function buildValidationSelect(row, specialCols, tableId) {
     const select = document.createElement("select");
     ["", "Oui", "Non"].forEach((opt) => {
@@ -387,6 +507,8 @@
     return select;
   }
 
+  // Saved on blur rather than on every keystroke, to avoid one Grist API call per
+  // character typed.
   function buildCommentInput(row, specialCols, tableId) {
     const input = document.createElement("input");
     input.type = "text";
@@ -397,6 +519,10 @@
     return input;
   }
 
+  // Writes a single cell back to Grist and mirrors it into the in-memory row cache
+  // (mainRows/bottomRows) so a later re-render (e.g. switching indicator and back)
+  // reflects the edit without refetching the table. The "saving"/"saved" classes
+  // give the cell a brief visual confirmation (see style.css).
   async function updateCell(tableId, rowId, colName, value, cellEl) {
     if (!tableId || !colName) return;
 

@@ -1,3 +1,9 @@
+/* Grist Custom Widget stylesheet — pairs with app.js/index.html.
+   Layout produced: indicator dropdown (.toolbar) > status banner (#status) >
+   main_validation table (.panel #main-table-container) > histogram (.panel
+   #chart-container). Colors are theme tokens on :root so a dark-mode variant could
+   be added later via a prefers-color-scheme override without touching selectors. */
+
 :root {
   color-scheme: light;
   --border: #d8dce0;
@@ -25,6 +31,9 @@ body {
   font-size: 14px;
 }
 
+/* Wraps each top-level block (the main_validation table, the histogram) with a
+   separating rule; the last panel drops its border so the page doesn't end on a
+   stray line. */
 .panel {
   margin-bottom: 24px;
   padding-bottom: 16px;
@@ -41,6 +50,8 @@ body {
   color: var(--text);
 }
 
+/* Row of label+control pairs — currently just the indicator <select>, but built to
+   hold more than one control if the widget grows. */
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -63,6 +74,36 @@ body {
   min-width: 180px;
 }
 
+/* Prev/Next indicator buttons, styled to match the toolbar's select inputs. */
+.nav-button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-alt);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.nav-button:hover:not(:disabled) {
+  background: var(--border);
+}
+
+.nav-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* "X / XX" position indicator next to the dropdown, kept in sync by
+   updateIndicatorNav() in app.js. */
+.indicator-position {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* #status is always in the DOM (see index.html); :empty collapses it to nothing
+   when app.js clears the message, so no layout gap shows when there's nothing to
+   report. */
 .status {
   margin-bottom: 12px;
   padding: 0;
@@ -93,6 +134,8 @@ body {
   color: var(--error-text);
 }
 
+/* Same :empty trick as .status — hides the container when app.js has nothing to
+   chart (e.g. no numeric "value" column, or the current indicator has no rows). */
 .chart-container:empty {
   display: none;
 }
@@ -110,6 +153,7 @@ body {
   margin-bottom: 16px;
 }
 
+/* One row per histogram bin: [bin range label] [bar] [count]. */
 .chart-row {
   display: grid;
   grid-template-columns: minmax(80px, 160px) 1fr 32px;
@@ -132,6 +176,8 @@ body {
   overflow: hidden;
 }
 
+/* Width is set inline per bar in app.js (proportional to the bin's count vs. the
+   tallest bin), so no width rule is defined here. */
 .chart-bar {
   background: var(--accent);
   height: 100%;
@@ -167,6 +213,8 @@ tbody tr:nth-child(even) {
   background: var(--bg-alt);
 }
 
+/* The validation <select> and commentaires <input> that app.js injects into table
+   cells (buildValidationSelect / buildCommentInput). */
 td select,
 td input[type="text"] {
   width: 100%;
@@ -176,6 +224,8 @@ td input[type="text"] {
   font-size: 13px;
 }
 
+/* Transient feedback classes toggled by app.js's updateCell() while an edit is
+   being saved to Grist, and briefly after it succeeds. */
 td.saving {
   outline: 2px solid #ffd54f;
 }
