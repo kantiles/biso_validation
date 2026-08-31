@@ -1,0 +1,8 @@
+[
+  {
+    "widgetId": "biso-validation-dev",
+    "name": "Validation BISO (dev local)",
+    "url": "http://localhost:8585/index.html",
+    "accessLevel": "full"
+  }
+]

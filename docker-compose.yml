@@ -1,0 +1,28 @@
+services:
+  # Instance Grist locale, pour tester le widget dans son vrai contexte
+  # (RPC postMessage, docApi, etc.) plutôt que via `python3 -m http.server`
+  # qui ne peut pas simuler l'iframe Grist.
+  grist:
+    image: gristlabs/grist:latest
+    ports:
+      - "8484:8484"
+    environment:
+      # Sur Mac/OrbStack les ports publiés sont directement joignables en
+      # localhost depuis le navigateur hôte : pas besoin du bricolage IP WSL2
+      # du tutoriel d'origine (spécifique à l'isolation réseau WSL2/Windows).
+      - GRIST_WIDGET_LIST_URL=http://localhost:8585/manifest.json
+      - APP_HOME_URL=http://localhost:8484
+    volumes:
+      - grist-data:/persist
+
+  # Sert ce dépôt en statique, à la place de GitHub Pages, pour développer
+  # avec rechargement instantané (bind-mount, pas de rebuild d'image).
+  widget:
+    build: .
+    ports:
+      - "8585:80"
+    volumes:
+      - ./:/usr/share/nginx/html:ro
+
+volumes:
+  grist-data:
