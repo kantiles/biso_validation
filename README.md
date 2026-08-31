@@ -13,7 +13,7 @@ des 10 premières lignes correspondantes, saisie de `validation` (Oui/Non) et
 - `app.js` — point d'entrée (câblage des événements, initialisation), importe les modules ES `js/*.js` :
   - `js/dom.js` — références DOM et affichage du statut
   - `js/utils.js` — petites fonctions pures partagées
-  - `js/grist-api.js` — accès à l'API Grist (jeton, SQL, schéma)
+  - `js/grist-api.js` — backend SQL local (DuckDB-Wasm) pour les requêtes sur `data_validation`
   - `js/table-render.js` — rendu générique d'un tableau avec cellules éditables
   - `js/main-table.js` — table `main_validation` (indicateurs, compteurs)
   - `js/stats-chart.js` — table `data_validation` (année, statistiques, graphique)
@@ -51,6 +51,31 @@ local (une erreur `Unknown forward destination: grist` à l'initialisation est
 un signe possible de désynchronisation entre les deux). Si le document est un
 jour hébergé sur une autre instance Grist, il faudra aussi retélécharger le
 script depuis la nouvelle instance.
+
+## Statistiques sur `data_validation` (DuckDB-Wasm)
+
+`data_validation` peut contenir plusieurs centaines de milliers de lignes — trop
+pour recalculer des statistiques de distribution (déciles, quartiles, écart-type…)
+à la main en JS à chaque changement de filtre. Le widget appelait auparavant
+l'API REST SQL de Grist (`POST /api/docs/:docId/sql`) pour déléguer ce calcul au
+serveur, mais cet appel est une requête HTTP cross-origin directement depuis le
+widget vers `grist.numerique.gouv.fr`, qui se heurte à la même protection
+anti-bot (Incapsula/Imperva) que `grist-plugin-api.js` (redirections 307 en
+boucle → `Failed to fetch`) — voir la section précédente.
+
+À la place : `js/stats-chart.js` rapatrie `data_validation` en une fois via
+`grist.docApi.fetchTable()` (RPC `postMessage` entre le widget et la page Grist
+parente — jamais de requête réseau directe, donc insensible au WAF), puis
+`js/grist-api.js` charge ces lignes dans une base [DuckDB](https://duckdb.org/)
+en mémoire, dans le navigateur (via [DuckDB-Wasm](https://duckdb.org/docs/api/wasm/overview),
+chargé depuis jsDelivr). Toutes les requêtes SQL (statistiques par `niv_geo`,
+quantiles, graphique par département) tournent ensuite localement contre cette
+base — plus aucun appel réseau vers Grist une fois la table chargée. DuckDB
+diffère de SQLite sur quelques points dont le SQL de `stats-chart.js` tient
+compte : identifiants non quotés repliés en minuscules (d'où les alias
+`"naCount"`/`"meanSq"` explicitement quotés), `CAST` strict plutôt que permissif
+(`TRY_CAST` utilisé à la place), et `MAX(a, b)` scalaire absent (remplacé par
+`GREATEST(a, b)`).
 
 ## Installation dans Grist
 

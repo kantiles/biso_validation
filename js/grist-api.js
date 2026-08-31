@@ -1,60 +1,81 @@
-// Couche d'accès à l'API Grist : jeton d'accès, requêtes SQL en lecture seule,
-// introspection du schéma (colonnes d'une table).
+// Backend de requêtage SQL en local, via DuckDB-Wasm — remplace les appels à
+// l'API REST /sql de Grist (POST /api/docs/:docId/sql). Cette API faisait une
+// requête HTTP cross-origin directement depuis le widget vers
+// grist.numerique.gouv.fr, qui se heurte à la protection anti-bot
+// (Incapsula/Imperva) de cette instance : redirections 307 en boucle, jamais de
+// réponse utilisable, "TypeError: Failed to fetch" côté navigateur.
 //
-// "data_validation" holds hundreds of millions of rows, so unlike main_validation
-// it is NEVER fetched into the browser with grist.docApi.fetchTable — that would
-// pull the whole table over the wire just to compute a summary. Instead
-// everything computed from it is run server-side with Grist's own SQL query API
-// (POST /api/docs/:docId/sql, SELECT-only, running against the doc's underlying
-// SQLite storage), reached from the widget via an access token — see runSql().
-// Column names for that table are resolved the same lightweight way, by querying
-// Grist's own schema tables (_grist_Tables / _grist_Tables_column) instead of
-// fetching a data row.
+// À la place : les données de "data_validation" sont rapatriées une seule fois
+// via grist.docApi.fetchTable() (RPC postMessage entre le widget et la page
+// Grist parente — aucune requête réseau directe, donc insensible au WAF), puis
+// chargées dans une base DuckDB en mémoire DANS le navigateur (voir
+// loadTableIntoDuckDb ci-dessous, appelée depuis stats-chart.js). Toutes les
+// requêtes SQL (stats de distribution, quantiles, graphique) tournent ensuite
+// localement contre cette base — plus aucun appel réseau vers Grist une fois la
+// table chargée.
 "use strict";
 
-// Access tokens from grist.docApi.getAccessToken are short-lived (ttlMsecs) but
-// meant to be reused across calls rather than fetched per-query; cached here and
-// refreshed a few seconds before expiry.
-let cachedAccessToken = null;
+import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
+import { tableFromArrays } from "https://cdn.jsdelivr.net/npm/apache-arrow@17/+esm";
 
-async function getAccessToken() {
-  if (!cachedAccessToken || Date.now() > cachedAccessToken.expiresAt) {
-    const result = await grist.docApi.getAccessToken({ readOnly: true });
-    cachedAccessToken = { ...result, expiresAt: Date.now() + result.ttlMsecs - 5000 };
+let connPromise = null;
+
+// Instantiates a single AsyncDuckDB (+ worker) and opens one connection,
+// lazily and only once — reused for every load/query, since spinning up the
+// wasm module has real overhead. Follows DuckDB-Wasm's documented bootstrap
+// pattern: the worker script is loaded via a same-origin Blob that
+// `importScripts()`s the actual (cross-origin, CDN-hosted) worker bundle,
+// which sidesteps cross-origin Worker-construction restrictions.
+async function getConn() {
+  if (!connPromise) {
+    connPromise = (async () => {
+      const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+      const workerUrl = URL.createObjectURL(
+        new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
+      );
+      const worker = new Worker(workerUrl);
+      const logger = new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING);
+      const db = new duckdb.AsyncDuckDB(logger, worker);
+      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+      URL.revokeObjectURL(workerUrl);
+      return db.connect();
+    })();
   }
-  return cachedAccessToken;
+  return connPromise;
 }
 
-// Runs a read-only SQL SELECT against the document via Grist's REST SQL endpoint
-// and returns the result rows as plain objects (one per record). This is what
-// lets the stats/chart section aggregate hundreds of millions of rows on the
-// server instead of downloading them.
+function quoteIdent(id) {
+  return '"' + String(id).replace(/"/g, '""') + '"';
+}
+
+// Loads `columnsData` (the {colId: valueArray} shape returned by
+// grist.docApi.fetchTable(), minus "id"/"manualSort") into a local DuckDB table
+// named `tableName`, replacing any previous contents under that name — the
+// widget only ever loads data_validation once per session, but this stays safe
+// to call again.
+export async function loadTableIntoDuckDb(tableName, columnsData) {
+  const conn = await getConn();
+  await conn.query("DROP TABLE IF EXISTS " + quoteIdent(tableName));
+  const arrowTable = tableFromArrays(columnsData);
+  await conn.insertArrowTable(arrowTable, { name: tableName, create: true });
+}
+
+// Runs a SQL query against the local DuckDB database and returns the result
+// rows as plain objects — same shape the previous Grist-REST-backed runSql()
+// returned, so callers didn't need to change. `args`, when given, are bound
+// positionally to "?" placeholders via a prepared statement.
 export async function runSql(sql, args) {
-  const { token, baseUrl } = await getAccessToken();
-  const url = baseUrl + "/sql?auth=" + encodeURIComponent(token);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sql, args: args || [], timeout: 20000 }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error("Requête SQL échouée (" + response.status + ") " + text);
+  const conn = await getConn();
+  let result;
+  if (args && args.length > 0) {
+    const stmt = await conn.prepare(sql);
+    try {
+      result = await stmt.query(...args);
+    } finally {
+      await stmt.close();
+    }
+  } else {
+    result = await conn.query(sql);
   }
-
-  const body = await response.json();
-  return (body.records || []).map((record) => record.fields);
-}
-
-// Lists a table's column ids by querying Grist's own schema tables rather than
-// fetching a row of real data — cheap regardless of the table's row count.
-export async function getTableColumns(tableId) {
-  const rows = await runSql(
-    "SELECT c.colId AS colId FROM _grist_Tables_column c " +
-      "JOIN _grist_Tables t ON t.id = c.parentId " +
-      "WHERE t.tableId = ?",
-    [tableId]
-  );
-  return rows.map((row) => row.colId).filter((colId) => colId !== "manualSort");
+  return result.toArray().map((row) => row.toJSON());
 }

@@ -1,23 +1,32 @@
 // Gestion de la table "data_validation" : sélecteur d'année, table de
-// statistiques de distribution et graphique en barres par département — tout
-// calculé côté serveur via SQL (voir grist-api.js), jamais en rapatriant les
-// lignes dans le navigateur.
+// statistiques de distribution et graphique en barres par département.
+//
+// Les lignes sont rapatriées une fois via grist.docApi.fetchTable() (RPC
+// postMessage, jamais de requête réseau directe — voir grist-api.js) puis
+// chargées dans une base DuckDB en mémoire dans le navigateur ; tous les calculs
+// ci-dessous (statistiques de distribution, quantiles, graphique) sont ensuite
+// des requêtes SQL contre cette base locale, jamais un rapatriement des lignes
+// une par une dans du JS.
 "use strict";
 
 import { quoteIdent, findColumn, formatNumber, formatNumberOrDash } from "./utils.js";
-import { runSql, getTableColumns } from "./grist-api.js";
+import { runSql, loadTableIntoDuckDb } from "./grist-api.js";
 import { anneeSelect, chartContainer, valueStatsContainer, setStatus } from "./dom.js";
 import { getSelectedIndicator } from "./main-table.js";
 
 export const BOTTOM_TABLE_HINT = "data_validation";
 
+// Name of the local DuckDB table data_validation's rows are loaded into — an
+// identifier we control ourselves, independent of Grist's own internal table
+// id (bottomTableId, used only to call fetchTable).
+const DUCKDB_TABLE = "data_validation";
+
 // The "niv_geo" value that selects département-level rows for the bar chart
 // (see renderDepartmentChartFromSql).
 const DEP_NIV_GEO_VALUE = "dep";
 
-// "data_validation" state: only the table id and the resolved column names are
-// kept — no row cache, since rows are never fetched (see the module doc above).
-let bottomTableId = null;
+// "data_validation" state: the resolved column names — no row cache here (the
+// rows themselves live in DuckDB, not in a JS array, once loaded).
 let bottomSpecialCols = { idIndicateur: null, valueNew: null, valueOld: null, nivGeo: null, annee: null, codeGeo: null };
 
 // The year currently chosen in the "Année" dropdown (see populateAnneeSelect) —
@@ -30,20 +39,18 @@ export function setSelectedAnnee(value) {
   selectedAnnee = value;
 }
 
-// Resolves data_validation's column ids via schema introspection (getTableColumns)
-// — no data row is fetched, so this is cheap no matter how many rows the table
-// holds. idIndicateur/annee (filtering), valueNew (the stats/chart data),
-// valueOld (compared against valueNew for the écart distribution table), nivGeo
-// (the stats table's grouping column, and the chart's "dep" level filter) and
-// codeGeo (the chart's per-bar label) are needed, since no table is ever
-// rendered for data_validation.
+// Fetches data_validation in full via fetchTable() (postMessage RPC — the
+// table isn't astronomically large, just too big to recompute stats over in
+// hand-written JS on every filter change) and loads it into a local DuckDB
+// table, then resolves the columns this widget treats specially the same way
+// loadMainTable does for main_validation.
 export async function loadBottomTable(tableId) {
-  bottomTableId = tableId;
   chartContainer.innerHTML = "";
   valueStatsContainer.innerHTML = "";
 
   try {
-    const columns = await getTableColumns(tableId);
+    const data = await grist.docApi.fetchTable(tableId);
+    const columns = Object.keys(data).filter((k) => k !== "id" && k !== "manualSort");
 
     bottomSpecialCols = {
       idIndicateur: findColumn(columns, "id_indicateur"),
@@ -67,6 +74,12 @@ export async function loadBottomTable(tableId) {
       setStatus("Attention : colonne \"value_old\" introuvable dans " + BOTTOM_TABLE_HINT + " : distribution des écarts indisponible.", "warn");
     }
 
+    const columnsData = {};
+    columns.forEach((col) => {
+      columnsData[col] = data[col];
+    });
+    await loadTableIntoDuckDb(DUCKDB_TABLE, columnsData);
+
     await populateAnneeSelect();
     await renderStatsAndChart();
   } catch (err) {
@@ -82,7 +95,7 @@ export async function populateAnneeSelect() {
   anneeSelect.innerHTML = "";
 
   const anneeCol = bottomSpecialCols.annee;
-  if (!anneeCol || !bottomTableId) {
+  if (!anneeCol) {
     anneeSelect.disabled = true;
     selectedAnnee = "";
     return;
@@ -100,7 +113,7 @@ export async function populateAnneeSelect() {
   }
 
   const rows = await runSql(
-    "SELECT DISTINCT " + anneeId + " AS annee FROM " + quoteIdent(bottomTableId) +
+    "SELECT DISTINCT " + anneeId + " AS annee FROM " + quoteIdent(DUCKDB_TABLE) +
       " WHERE " + whereParts.join(" AND ") + " ORDER BY " + anneeId + " DESC",
     args
   );
@@ -120,10 +133,9 @@ export async function populateAnneeSelect() {
 
 // Drives the per-niv_geo stats table(s) — one for "value_new", and (when
 // "value_old" exists) one for the écart between them — and the département-level
-// bar chart of "value_new", computed entirely on the server with SQL queries
-// against data_validation — never all of its rows. All are scoped to the
-// selected indicator and (when data_validation has an "annee" column) the
-// selected year.
+// bar chart of "value_new", computed entirely by DuckDB queries against the
+// local copy of data_validation. All are scoped to the selected indicator and
+// (when data_validation has an "annee" column) the selected year.
 export async function renderStatsAndChart() {
   chartContainer.innerHTML = "";
   valueStatsContainer.innerHTML = "";
@@ -131,16 +143,13 @@ export async function renderStatsAndChart() {
   const valueCol = bottomSpecialCols.valueNew;
   if (!valueCol) return;
 
-  const table = quoteIdent(bottomTableId);
+  const table = quoteIdent(DUCKDB_TABLE);
   const valueId = quoteIdent(valueCol);
   const selectedIndicator = getSelectedIndicator();
 
   // Base WHERE (indicator + year only, NA rows included) — shared starting point
   // for the stats table(s) (which need NA counts) and the chart (which
   // additionally filters to "dep"-level rows and excludes NA rows below).
-  // Filtering by the selected indicator (when data_validation has that column)
-  // is what keeps each query fast — it should hit an index on id_indicateur
-  // rather than scan the full hundreds-of-millions-row table.
   const baseWhereParts = [];
   const baseArgs = [];
   if (bottomSpecialCols.idIndicateur && selectedIndicator) {
@@ -157,7 +166,7 @@ export async function renderStatsAndChart() {
   if (bottomSpecialCols.valueOld) {
     // A NULL value_new or value_old naturally makes the écart NULL too, so it
     // falls into the group's NA count the same way a missing value_new does above.
-    const ecartExpr = "(CAST(" + valueId + " AS REAL) - CAST(" + quoteIdent(bottomSpecialCols.valueOld) + " AS REAL))";
+    const ecartExpr = "(TRY_CAST(" + valueId + " AS DOUBLE) - TRY_CAST(" + quoteIdent(bottomSpecialCols.valueOld) + " AS DOUBLE))";
     await renderValueStatsTable(table, ecartExpr, baseWhereParts, baseArgs, "Distribution de l'écart (value_new − value_old)");
   }
 
@@ -178,7 +187,7 @@ async function renderDepartmentChartFromSql(table, valueId, baseWhereParts, base
   ]);
   const args = baseArgs.concat([DEP_NIV_GEO_VALUE]);
   const where = "WHERE " + whereParts.join(" AND ");
-  const castValue = "CAST(" + valueId + " AS REAL)";
+  const castValue = "TRY_CAST(" + valueId + " AS DOUBLE)";
 
   const rows = await runSql(
     "SELECT " + codeGeoId + " AS g, " + castValue + " AS v FROM " + table + " " + where +
@@ -209,15 +218,18 @@ async function renderDepartmentChartFromSql(table, valueId, baseWhereParts, base
 async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, title) {
   const nivGeoCol = bottomSpecialCols.nivGeo;
   const nivGeoId = nivGeoCol ? quoteIdent(nivGeoCol) : null;
-  const castValue = "CAST(" + valueId + " AS REAL)";
+  const castValue = "TRY_CAST(" + valueId + " AS DOUBLE)";
   const where = baseWhereParts.length > 0 ? "WHERE " + baseWhereParts.join(" AND ") : "";
 
+  // Aliases "naCount"/"meanSq" are double-quoted to preserve their exact case —
+  // unlike SQLite, DuckDB folds unquoted identifiers to lowercase, which would
+  // otherwise silently rename them to naCount -> nacount / meanSq -> meansq.
   const groupRows = await runSql(
     "SELECT " + (nivGeoId ? nivGeoId + " AS g, " : "") +
       "COUNT(*) AS total, " +
-      "SUM(CASE WHEN " + valueId + " IS NULL THEN 1 ELSE 0 END) AS naCount, " +
+      "SUM(CASE WHEN " + valueId + " IS NULL THEN 1 ELSE 0 END) AS \"naCount\", " +
       "MIN(" + castValue + ") AS mn, MAX(" + castValue + ") AS mx, " +
-      "AVG(" + castValue + ") AS mean, AVG(" + castValue + " * " + castValue + ") AS meanSq " +
+      "AVG(" + castValue + ") AS mean, AVG(" + castValue + " * " + castValue + ") AS \"meanSq\" " +
       "FROM " + table + " " + where +
       (nivGeoId ? " GROUP BY " + nivGeoId + " ORDER BY " + nivGeoId : ""),
     baseArgs
@@ -334,15 +346,17 @@ function renderValueStatsRows(groups, title) {
 }
 
 // Nearest-rank D1/Q1/median/Q3/D9 in a single sorted pass over the filtered rows,
-// using window functions (ROW_NUMBER/COUNT OVER) rather than five separate
-// "ORDER BY value LIMIT 1 OFFSET n" queries. This does require SQLite to sort the
+// using window functions (ROW_NUMBER OVER) rather than five separate
+// "ORDER BY value LIMIT 1 OFFSET n" queries. This does require DuckDB to sort the
 // filtered subset — unavoidable for exact quantiles without a value-ordered
 // index or a pre-built approximation structure — but it's the one query that
 // does, and it's scoped to the current indicator's rows, not the whole table.
 async function fetchQuantiles(table, castValue, where, filterArgs, count) {
   // Rank (1-indexed) of the p-th nearest-rank quantile among `count` sorted
   // values — matches valueAt()'s Math.round(p * (count - 1)) + 1 below.
-  const rankExpr = "MAX(CAST(ROUND(? * " + (count - 1) + ") AS INT) + 1, 1)";
+  // GREATEST(a, b), not SQLite's two-argument scalar MAX(a, b) — DuckDB's MAX
+  // is aggregate-only.
+  const rankExpr = "GREATEST(CAST(ROUND(? * " + (count - 1) + ") AS INT) + 1, 1)";
   const ranks = [0.1, 0.25, 0.5, 0.75, 0.9];
 
   // filterArgs' placeholder(s) appear first in the SQL text (inside the

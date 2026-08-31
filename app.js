@@ -3,7 +3,8 @@
 // index.html) :
 //   - js/dom.js         — références DOM et affichage du statut
 //   - js/utils.js        — petites fonctions pures partagées
-//   - js/grist-api.js    — accès à l'API Grist (jeton, SQL, schéma)
+//   - js/grist-api.js    — backend SQL local (DuckDB-Wasm) pour les requêtes
+//                          sur data_validation
 //   - js/table-render.js — rendu générique d'un <table> avec cellules éditables
 //   - js/main-table.js   — table "main_validation" (indicateurs, compteurs)
 //   - js/stats-chart.js  — table "data_validation" (année, stats, graphique)
@@ -45,7 +46,7 @@ import {
 // n'importe quel fichier js/*.js, index.html ou style.css). Affiché en bas de
 // page (voir index.html) pour vérifier facilement, notamment depuis Grist, que
 // la dernière version déployée sur GitHub Pages est bien celle chargée.
-const APP_VERSION = "1";
+const APP_VERSION = "2";
 document.getElementById("app-version").textContent = APP_VERSION;
 
 // Re-derives everything that depends on the selected indicator but isn't part of
