@@ -116,7 +116,11 @@ export async function populateAnneeSelect() {
 
   const rows = await runSql(
     "SELECT DISTINCT " + anneeId + " AS annee FROM " + quoteIdent(DUCKDB_TABLE) +
-      " WHERE " + whereParts.join(" AND ") + " ORDER BY " + anneeId + " DESC",
+      " WHERE " + whereParts.join(" AND ") +
+      // "annee" is stored as text (see normalizeColumn in grist-api.js) — sort
+      // numerically rather than lexicographically so e.g. "9" doesn't sort
+      // after "10".
+      " ORDER BY TRY_CAST(" + anneeId + " AS BIGINT) DESC",
     args
   );
 

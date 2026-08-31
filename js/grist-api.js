@@ -48,6 +48,20 @@ function quoteIdent(id) {
   return '"' + String(id).replace(/"/g, '""') + '"';
 }
 
+// Grist's fetchTable() returns loosely-typed column arrays (numbers, strings,
+// nulls — and a column that happens to be entirely null, or to mix types, is
+// common enough) which apache-arrow's tableFromArrays() can fail to infer a
+// type for ("Unable to infer Vector type from input values, explicit type
+// declaration expected"), aborting the whole table load. Since every SQL query
+// in this widget already does its own TRY_CAST(... AS DOUBLE) when it needs a
+// number (see stats-chart.js), there's no need for Arrow to carry real
+// numeric/date types here — every column is normalized to a plain
+// (string | null)[] first, which Arrow can always type as Utf8 without
+// guessing.
+function normalizeColumn(values) {
+  return values.map((v) => (v === null || v === undefined ? null : String(v)));
+}
+
 // Loads `columnsData` (the {colId: valueArray} shape returned by
 // grist.docApi.fetchTable(), minus "id"/"manualSort") into a local DuckDB table
 // named `tableName`, replacing any previous contents under that name — the
@@ -56,7 +70,11 @@ function quoteIdent(id) {
 export async function loadTableIntoDuckDb(tableName, columnsData) {
   const conn = await getConn();
   await conn.query("DROP TABLE IF EXISTS " + quoteIdent(tableName));
-  const arrowTable = tableFromArrays(columnsData);
+  const normalized = {};
+  Object.keys(columnsData).forEach((col) => {
+    normalized[col] = normalizeColumn(columnsData[col]);
+  });
+  const arrowTable = tableFromArrays(normalized);
   await conn.insertArrowTable(arrowTable, { name: tableName, create: true });
 }
 

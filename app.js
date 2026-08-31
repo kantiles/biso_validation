@@ -47,7 +47,7 @@ import {
 // droite de la page (voir index.html) pour vérifier facilement, notamment
 // depuis Grist, que la dernière version déployée sur GitHub Pages est bien
 // celle chargée.
-const APP_VERSION = "4";
+const APP_VERSION = "5";
 document.getElementById("app-version").textContent = APP_VERSION;
 
 // Re-derives everything that depends on the selected indicator but isn't part of
