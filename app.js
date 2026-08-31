@@ -3,16 +3,17 @@
 
   const MAX_ROWS = 10;
   const DEFAULT_TABLE_HINT = "base biso doc";
-  const SPECIAL_COLUMNS = new Set(["id_indicateur", "validation", "commentaires"]);
+  const SPECIAL_COLUMNS = new Set(["id_indicateur", "validation", "commentaires", "source"]);
 
   const sheetSelect = document.getElementById("sheet-select");
   const indicatorFilter = document.getElementById("indicator-filter");
   const statusEl = document.getElementById("status");
+  const chartContainer = document.getElementById("chart-container");
   const tableContainer = document.getElementById("table-container");
 
   let currentTableId = null;
   let currentColumns = [];
-  let currentSpecialCols = { idIndicateur: null, validation: null, commentaires: null };
+  let currentSpecialCols = { idIndicateur: null, validation: null, commentaires: null, source: null };
 
   function setStatus(message, level) {
     statusEl.textContent = message || "";
@@ -50,7 +51,7 @@
     grist.ready({ requiredAccess: "full" });
 
     sheetSelect.addEventListener("change", () => loadTable(sheetSelect.value));
-    indicatorFilter.addEventListener("input", () => renderFromCache());
+    indicatorFilter.addEventListener("change", () => renderFromCache());
 
     try {
       const tableIds = await grist.docApi.listTables();
@@ -98,6 +99,7 @@
         idIndicateur: findColumn(columns, "id_indicateur"),
         validation: findColumn(columns, "validation"),
         commentaires: findColumn(columns, "commentaires"),
+        source: findColumn(columns, "source"),
       };
 
       const rowCount = data.id ? data.id.length : 0;
@@ -121,6 +123,9 @@
       if (!currentSpecialCols.commentaires) {
         warnings.push("colonne \"commentaires\" introuvable : saisie désactivée");
       }
+      if (!currentSpecialCols.source) {
+        warnings.push("colonne \"source\" introuvable : graphique indisponible");
+      }
 
       if (warnings.length > 0) {
         setStatus("Attention : " + warnings.join(" ; ") + ".", "warn");
@@ -128,6 +133,8 @@
         setStatus("", "info");
       }
 
+      populateIndicatorFilter();
+      renderChart();
       renderFromCache();
     } catch (err) {
       console.error(err);
@@ -135,20 +142,107 @@
     }
   }
 
+  function populateIndicatorFilter() {
+    indicatorFilter.innerHTML = "";
+
+    const col = currentSpecialCols.idIndicateur;
+    if (!col) {
+      indicatorFilter.disabled = true;
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "—";
+      indicatorFilter.appendChild(option);
+      return;
+    }
+
+    indicatorFilter.disabled = false;
+
+    const allOption = document.createElement("option");
+    allOption.value = "";
+    allOption.textContent = "Tous";
+    indicatorFilter.appendChild(allOption);
+
+    const values = Array.from(
+      new Set(
+        cachedRows
+          .map((row) => row[col])
+          .filter((v) => v !== null && v !== undefined && v !== "")
+          .map((v) => String(v))
+      )
+    ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+    values.forEach((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      indicatorFilter.appendChild(option);
+    });
+  }
+
   function renderFromCache() {
-    const filterValue = indicatorFilter.value.trim().toLowerCase();
+    const filterValue = indicatorFilter.value;
     let rows = cachedRows;
 
     if (currentSpecialCols.idIndicateur && filterValue) {
       const col = currentSpecialCols.idIndicateur;
-      rows = rows.filter((row) => {
-        const value = row[col];
-        return value !== null && value !== undefined && String(value).toLowerCase().includes(filterValue);
-      });
+      rows = rows.filter((row) => String(row[col]) === filterValue);
     }
 
     rows = rows.slice(0, MAX_ROWS);
     renderTable(rows);
+  }
+
+  function renderChart() {
+    chartContainer.innerHTML = "";
+
+    const col = currentSpecialCols.source;
+    if (!col) return;
+
+    const counts = new Map();
+    cachedRows.forEach((row) => {
+      const raw = row[col];
+      const label = raw === null || raw === undefined || raw === "" ? "(vide)" : String(raw);
+      counts.set(label, (counts.get(label) || 0) + 1);
+    });
+
+    if (counts.size === 0) return;
+
+    const entries = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+    const maxCount = Math.max(...entries.map(([, count]) => count));
+
+    const title = document.createElement("h3");
+    title.textContent = "Répartition par source";
+    chartContainer.appendChild(title);
+
+    const chart = document.createElement("div");
+    chart.className = "chart";
+
+    entries.forEach(([label, count]) => {
+      const row = document.createElement("div");
+      row.className = "chart-row";
+
+      const labelEl = document.createElement("span");
+      labelEl.className = "chart-label";
+      labelEl.textContent = label;
+
+      const track = document.createElement("div");
+      track.className = "chart-bar-track";
+      const bar = document.createElement("div");
+      bar.className = "chart-bar";
+      bar.style.width = (count / maxCount) * 100 + "%";
+      track.appendChild(bar);
+
+      const countEl = document.createElement("span");
+      countEl.className = "chart-count";
+      countEl.textContent = String(count);
+
+      row.appendChild(labelEl);
+      row.appendChild(track);
+      row.appendChild(countEl);
+      chart.appendChild(row);
+    });
+
+    chartContainer.appendChild(chart);
   }
 
   function renderTable(rows) {
