@@ -41,6 +41,7 @@
   const indicatorPositionEl = document.getElementById("indicator-position");
   const statusEl = document.getElementById("status");
   const chartContainer = document.getElementById("chart-container");
+  const valueStatsContainer = document.getElementById("value-stats");
   const mainTableContainer = document.getElementById("main-table-container");
   const statTotalEl = document.getElementById("stat-total");
   const statValidatedEl = document.getElementById("stat-validated");
@@ -452,6 +453,7 @@
   async function loadBottomTable(tableId) {
     bottomTableId = tableId;
     chartContainer.innerHTML = "";
+    valueStatsContainer.innerHTML = "";
 
     try {
       const columns = await getTableColumns(tableId);
@@ -474,11 +476,13 @@
   }
 
   // Real frequency histogram of the "value" column (not one bar per row), computed
-  // entirely on the server with two SQL aggregate queries against data_validation —
+  // entirely on the server with SQL aggregate queries against data_validation —
   // never all of its rows. Values are bucketed into HISTOGRAM_BIN_COUNT equal-width
-  // bins between the MIN/MAX of the currently filtered rows.
+  // bins between the MIN/MAX of the currently filtered rows. Also computes and
+  // renders the distribution summary (see renderValueStats) above the chart.
   async function renderHistogramFromSql() {
     chartContainer.innerHTML = "";
+    valueStatsContainer.innerHTML = "";
 
     const valueCol = bottomSpecialCols.value;
     if (!valueCol) return;
@@ -486,7 +490,7 @@
     const table = quoteIdent(bottomTableId);
     const valueId = quoteIdent(valueCol);
 
-    // WHERE clause + args shared by both queries below. Filtering by the selected
+    // WHERE clause + args shared by every query below. Filtering by the selected
     // indicator (when data_validation has that column) is what keeps each query
     // fast — it should hit an index on id_indicateur rather than scan the full
     // hundreds-of-millions-row table.
@@ -497,10 +501,16 @@
       filterArgs.push(selectedIndicator);
     }
     const where = "WHERE " + whereParts.join(" AND ");
+    const castValue = "CAST(" + valueId + " AS REAL)";
 
+    // One pass over the (filtered) rows for everything that doesn't require sorted
+    // order: count, min/max, and the mean/sum-of-squares needed for the standard
+    // deviation (variance = E[x²] − E[x]², computed after the query since SQLite
+    // has no built-in sqrt()).
     const [stats] = await runSql(
-      "SELECT MIN(CAST(" + valueId + " AS REAL)) AS mn, MAX(CAST(" + valueId + " AS REAL)) AS mx, " +
-        "COUNT(*) AS cnt FROM " + table + " " + where,
+      "SELECT MIN(" + castValue + ") AS mn, MAX(" + castValue + ") AS mx, COUNT(*) AS cnt, " +
+        "AVG(" + castValue + ") AS mean, AVG(" + castValue + " * " + castValue + ") AS meanSq " +
+        "FROM " + table + " " + where,
       filterArgs
     );
 
@@ -508,22 +518,29 @@
 
     const min = Number(stats.mn);
     const max = Number(stats.mx);
+    const count = Number(stats.cnt);
+    const mean = Number(stats.mean);
+    const variance = Math.max(0, Number(stats.meanSq) - mean * mean);
+    const stdDev = Math.sqrt(variance);
+
     const binCount = HISTOGRAM_BIN_COUNT;
     const range = max - min;
 
     const bins = new Array(binCount).fill(0);
+    let quantiles;
 
     if (range === 0) {
-      // Every value is identical — a single bin avoids a divide-by-zero below, and
-      // there's nothing left to GROUP BY server-side.
-      bins[0] = Number(stats.cnt);
+      // Every value is identical — a single histogram bin avoids a divide-by-zero
+      // below, and every quantile trivially equals that value (no need to sort).
+      bins[0] = count;
+      quantiles = { d1: min, q1: min, median: min, q3: min, d9: min };
     } else {
       // SQLite's multi-argument min()/max() are scalar functions here (not
       // aggregates) — this clamps the top bin the same way the old client-side
       // `if (idx >= binCount) idx = binCount - 1` did, since the max value would
       // otherwise compute to bin index binCount (one past the last bin).
       const binRows = await runSql(
-        "SELECT MIN(CAST(((CAST(" + valueId + " AS REAL) - ?) / ?) * ? AS INT), ?) AS bin, COUNT(*) AS cnt " +
+        "SELECT MIN(CAST((( " + castValue + " - ?) / ?) * ? AS INT), ?) AS bin, COUNT(*) AS cnt " +
           "FROM " + table + " " + where + " GROUP BY bin ORDER BY bin",
         [min, range, binCount, binCount - 1, ...filterArgs]
       );
@@ -531,9 +548,87 @@
         const idx = Number(row.bin);
         if (idx >= 0 && idx < binCount) bins[idx] = Number(row.cnt);
       });
+
+      quantiles = await fetchQuantiles(table, castValue, where, filterArgs, count);
     }
 
+    renderValueStats({ min, max, count, mean, stdDev, ...quantiles });
     renderHistogramBins(bins, min, max);
+  }
+
+  // Nearest-rank D1/Q1/median/Q3/D9 in a single sorted pass over the filtered rows,
+  // using window functions (ROW_NUMBER/COUNT OVER) rather than five separate
+  // "ORDER BY value LIMIT 1 OFFSET n" queries. This does require SQLite to sort the
+  // filtered subset — unavoidable for exact quantiles without a value-ordered
+  // index or a pre-built approximation structure — but it's the one query that
+  // does, and it's scoped to the current indicator's rows, not the whole table.
+  async function fetchQuantiles(table, castValue, where, filterArgs, count) {
+    // Rank (1-indexed) of the p-th nearest-rank quantile among `count` sorted
+    // values — matches valueAt()'s Math.round(p * (count - 1)) + 1 below.
+    const rankExpr = "MAX(CAST(ROUND(? * " + (count - 1) + ") AS INT) + 1, 1)";
+    const ranks = [0.1, 0.25, 0.5, 0.75, 0.9];
+
+    // filterArgs' placeholder(s) appear first in the SQL text (inside the
+    // "filtered" CTE's WHERE clause), followed by one "?" per rank (inside the
+    // final WHERE rn IN (...)) — args must be supplied in that same order.
+    const rows = await runSql(
+      "WITH filtered AS (SELECT " + castValue + " AS v FROM " + table + " " + where + "), " +
+        "ordered AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) AS rn FROM filtered) " +
+        "SELECT v, rn FROM ordered WHERE rn IN (" + ranks.map(() => rankExpr).join(", ") + ")",
+      [...filterArgs, ...ranks]
+    );
+
+    const byRank = new Map(rows.map((row) => [Number(row.rn), Number(row.v)]));
+    const valueAt = (p) => {
+      const rank = Math.max(1, Math.round(p * (count - 1)) + 1);
+      return byRank.has(rank) ? byRank.get(rank) : null;
+    };
+
+    return {
+      d1: valueAt(0.1),
+      q1: valueAt(0.25),
+      median: valueAt(0.5),
+      q3: valueAt(0.75),
+      d9: valueAt(0.9),
+    };
+  }
+
+  // Renders the "min / max / D1 / D9 / mean / median / Q1 / Q3 / std dev / IQR"
+  // summary strip above the histogram. IQR (Q3 − Q1) is derived client-side; every
+  // other figure comes straight from the SQL aggregates in renderHistogramFromSql.
+  function renderValueStats(s) {
+    valueStatsContainer.innerHTML = "";
+    if (s.q1 === null || s.q3 === null) return;
+
+    const items = [
+      ["Min", s.min],
+      ["Max", s.max],
+      ["Décile 1", s.d1],
+      ["Décile 9", s.d9],
+      ["Moyenne", s.mean],
+      ["Médiane", s.median],
+      ["Quartile 1", s.q1],
+      ["Quartile 3", s.q3],
+      ["Écart-type", s.stdDev],
+      ["Écart interquartile", s.q3 - s.q1],
+    ];
+
+    items.forEach(([label, value]) => {
+      const item = document.createElement("div");
+      item.className = "value-stat";
+
+      const valueEl = document.createElement("span");
+      valueEl.className = "value-stat-value";
+      valueEl.textContent = formatNumber(value);
+
+      const labelEl = document.createElement("span");
+      labelEl.className = "value-stat-label";
+      labelEl.textContent = label;
+
+      item.appendChild(valueEl);
+      item.appendChild(labelEl);
+      valueStatsContainer.appendChild(item);
+    });
   }
 
   function renderHistogramBins(bins, min, max) {
