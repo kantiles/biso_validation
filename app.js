@@ -3,7 +3,7 @@
 
   const MAX_ROWS = 10;
   const DEFAULT_TABLE_HINT = "base biso doc";
-  const SPECIAL_COLUMNS = new Set(["id_indicateur", "validation", "commentaires", "source"]);
+  const SPECIAL_COLUMNS = new Set(["id_indicateur", "validation", "commentaires", "value"]);
 
   const sheetSelect = document.getElementById("sheet-select");
   const indicatorFilter = document.getElementById("indicator-filter");
@@ -13,7 +13,7 @@
 
   let currentTableId = null;
   let currentColumns = [];
-  let currentSpecialCols = { idIndicateur: null, validation: null, commentaires: null, source: null };
+  let currentSpecialCols = { idIndicateur: null, validation: null, commentaires: null, value: null };
 
   function setStatus(message, level) {
     statusEl.textContent = message || "";
@@ -99,7 +99,7 @@
         idIndicateur: findColumn(columns, "id_indicateur"),
         validation: findColumn(columns, "validation"),
         commentaires: findColumn(columns, "commentaires"),
-        source: findColumn(columns, "source"),
+        value: findColumn(columns, "value"),
       };
 
       const rowCount = data.id ? data.id.length : 0;
@@ -123,8 +123,8 @@
       if (!currentSpecialCols.commentaires) {
         warnings.push("colonne \"commentaires\" introuvable : saisie désactivée");
       }
-      if (!currentSpecialCols.source) {
-        warnings.push("colonne \"source\" introuvable : graphique indisponible");
+      if (!currentSpecialCols.value) {
+        warnings.push("colonne \"value\" introuvable : graphique indisponible");
       }
 
       if (warnings.length > 0) {
@@ -134,7 +134,6 @@
       }
 
       populateIndicatorFilter();
-      renderChart();
       renderFromCache();
     } catch (err) {
       console.error(err);
@@ -190,34 +189,40 @@
 
     rows = rows.slice(0, MAX_ROWS);
     renderTable(rows);
+    renderChart(rows);
   }
 
-  function renderChart() {
+  function renderChart(rows) {
     chartContainer.innerHTML = "";
 
-    const col = currentSpecialCols.source;
-    if (!col) return;
+    const valueCol = currentSpecialCols.value;
+    if (!valueCol) return;
 
-    const counts = new Map();
-    cachedRows.forEach((row) => {
-      const raw = row[col];
-      const label = raw === null || raw === undefined || raw === "" ? "(vide)" : String(raw);
-      counts.set(label, (counts.get(label) || 0) + 1);
-    });
+    const labelCol = currentSpecialCols.idIndicateur;
 
-    if (counts.size === 0) return;
+    const entries = rows
+      .map((row) => {
+        const rawValue = row[valueCol];
+        const numericValue = typeof rawValue === "number" ? rawValue : parseFloat(rawValue);
+        return {
+          label: labelCol && row[labelCol] !== null && row[labelCol] !== undefined ? String(row[labelCol]) : "#" + row.id,
+          value: Number.isFinite(numericValue) ? numericValue : 0,
+        };
+      })
+      .filter((entry) => Number.isFinite(entry.value));
 
-    const entries = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-    const maxCount = Math.max(...entries.map(([, count]) => count));
+    if (entries.length === 0) return;
+
+    const maxValue = Math.max(...entries.map((e) => e.value), 0) || 1;
 
     const title = document.createElement("h3");
-    title.textContent = "Répartition par source";
+    title.textContent = "Valeur par indicateur";
     chartContainer.appendChild(title);
 
     const chart = document.createElement("div");
     chart.className = "chart";
 
-    entries.forEach(([label, count]) => {
+    entries.forEach(({ label, value }) => {
       const row = document.createElement("div");
       row.className = "chart-row";
 
@@ -229,12 +234,12 @@
       track.className = "chart-bar-track";
       const bar = document.createElement("div");
       bar.className = "chart-bar";
-      bar.style.width = (count / maxCount) * 100 + "%";
+      bar.style.width = (value / maxValue) * 100 + "%";
       track.appendChild(bar);
 
       const countEl = document.createElement("span");
       countEl.className = "chart-count";
-      countEl.textContent = String(count);
+      countEl.textContent = String(value);
 
       row.appendChild(labelEl);
       row.appendChild(track);
