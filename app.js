@@ -57,7 +57,7 @@ import {
 // n'importe quel fichier js/*.js, index.html ou style.css). Affiché en bas de
 // page (voir index.html) pour vérifier facilement, notamment depuis Grist, que
 // la dernière version déployée sur GitHub Pages est bien celle chargée.
-const APP_VERSION = "15";
+const APP_VERSION = "25";
 document.getElementById("app-version").textContent = APP_VERSION;
 
 // Re-derives everything that depends on the selected indicator but isn't part of
@@ -116,8 +116,13 @@ async function init() {
   anneeSelect.addEventListener("change", () => {
     selectAnnee(anneeSelect.value).catch(reportStatsError);
   });
-  anneePrevBtn.addEventListener("click", () => stepAnnee(-1).catch(reportStatsError));
-  anneeNextBtn.addEventListener("click", () => stepAnnee(1).catch(reportStatsError));
+  // stepAnnee's delta moves through the dropdown's option list, which
+  // populateAnneeSelect builds most-recent-first (index 0 = most recent
+  // year) — so index+1 is an OLDER year and index-1 a MORE RECENT one.
+  // Swapped here (prev → +1, next → -1) so the right arrow increases the
+  // year and the left arrow decreases it, matching the indicator arrows.
+  anneePrevBtn.addEventListener("click", () => stepAnnee(1).catch(reportStatsError));
+  anneeNextBtn.addEventListener("click", () => stepAnnee(-1).catch(reportStatsError));
 
   // Restricts which indicators show up in the dropdown/nav to those whose
   // main_validation row has this validation value — rebuilding the list picks a

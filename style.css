@@ -20,7 +20,7 @@
   --error-text: #b3261e;
   --stat-neutral: #1f2933;
   --stat-success: #34cb6a;
-  --stat-danger: #8c1c13;
+  --stat-danger: #AD4847;
   --niv-geo-badge-off: #d0c3b7;
 }
 
@@ -291,6 +291,24 @@ th {
 
 tbody tr:nth-child(even) {
   background: var(--bg-alt);
+}
+
+/* Conditional formatting on the geo value tables' "% écart" cells
+   (js/stats-chart.js — pctSeverityClass), regardless of direction: three
+   tiers of the same danger red at increasing opacity, darkest from ±20%. */
+.pct-diff--low {
+  background: color-mix(in srgb, var(--stat-danger) 15%, var(--bg));
+}
+
+.pct-diff--medium {
+  background: color-mix(in srgb, var(--stat-danger) 35%, var(--bg));
+  font-weight: 600;
+}
+
+.pct-diff--high {
+  background: color-mix(in srgb, var(--stat-danger) 60%, var(--bg));
+  color: #fff;
+  font-weight: 600;
 }
 
 /* The validation <select> and commentaires <textarea> that app.js injects into

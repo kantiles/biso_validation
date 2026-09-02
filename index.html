@@ -6,7 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Validation BISO</title>
   <link rel="stylesheet" href="style.css" />
-  <script src="http://localhost:8484/grist-plugin-api.js"></script>
+  <!-- Test local (docker-compose) : <script src="http://localhost:8484/grist-plugin-api.js"></script> -->
+  <script src="https://grist.numerique.gouv.fr/grist-plugin-api.js"></script>
 </head>
 
 <body>
@@ -15,7 +16,7 @@
   <div class="stats">
     <div class="stat-box">
       <span class="stat-value stat-value--neutral" id="stat-total">0</span>
-      <span class="stat-label">Indicateurs</span>
+      <span class="stat-label">Indicateurs à valider</span>
     </div>
     <div class="stat-box">
       <span class="stat-value stat-value--success" id="stat-validated">0</span>

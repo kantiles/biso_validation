@@ -28,11 +28,12 @@ des 10 premières lignes correspondantes, saisie de `validation` (Oui/Non) et
 ## Instance Grist ciblée
 
 `index.html` charge le script client Grist directement depuis l'instance ciblée
-(`<instance>/grist-plugin-api.js`) plutôt qu'une copie locale committée. En
-développement, ça pointe vers l'instance Docker locale
-(`http://localhost:8484/grist-plugin-api.js`, voir `docker-compose.yml`) ; en
-production il faut remplacer cette URL par celle de l'instance Grist réelle
-(ex. `https://grist.numerique.gouv.fr/grist-plugin-api.js`) avant déploiement.
+(`<instance>/grist-plugin-api.js`) plutôt qu'une copie locale committée. Les
+deux URLs possibles sont présentes dans `index.html` : celle de l'instance
+Docker locale (`http://localhost:8484/grist-plugin-api.js`, voir
+`docker-compose.yml`) en commentaire, et celle de l'instance de production
+(`https://grist.numerique.gouv.fr/grist-plugin-api.js`) active par défaut.
+Pour tester en local, commenter/décommenter les deux lignes en sens inverse.
 
 Sur `grist.numerique.gouv.fr`, ce script (et l'API REST SQL, voir ci-dessous) se
 sont déjà heurtés par le passé à une protection anti-bot (Incapsula/Imperva) :
