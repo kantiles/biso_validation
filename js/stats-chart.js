@@ -585,18 +585,16 @@ async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, t
   const castValue = "CAST(" + valueId + " AS REAL)";
   const where = baseWhereParts.length > 0 ? "WHERE " + baseWhereParts.join(" AND ") : "";
 
-  // The aggregate query used to CAST(...) the same value expression four
-  // times and multiply two copies of it together for the variance term
-  // (AVG(CAST(...) * CAST(...))) — that literal duplicated expression got
-  // flagged (403) by grist.numerique.gouv.fr's WAF, presumably as a SQLi-like
-  // pattern, even though every other query here passed fine. Casting once in
-  // an inner subquery and aggregating the short alias `v` (including `v * v`
-  // for the variance term) avoids that duplication.
+  // grist.numerique.gouv.fr's WAF 403s this query even after casting only
+  // once in a subquery (see git history) — the remaining suspect is the
+  // CASE WHEN, a classic WAF-flagged SQLi pattern (used in blind/conditional
+  // injection probes). COUNT(v) already ignores NULLs on its own, so the NA
+  // count is just total - validCount, computed client-side instead — no CASE
+  // needed.
   const innerSelect = "SELECT " + (nivGeoId ? nivGeoId + " AS g, " : "") + castValue + " AS v FROM " + table + " " + where;
   const groupRows = await runSql(
     "SELECT " + (nivGeoId ? "g, " : "") +
-      "COUNT(*) AS total, " +
-      "SUM(CASE WHEN v IS NULL THEN 1 ELSE 0 END) AS naCount, " +
+      "COUNT(*) AS total, COUNT(v) AS validCount, " +
       "MIN(v) AS mn, MAX(v) AS mx, " +
       "AVG(v) AS mean, AVG(v * v) AS meanSq " +
       "FROM (" + innerSelect + ")" +
@@ -610,8 +608,8 @@ async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, t
   for (const row of groupRows) {
     const rawGeo = nivGeoId ? row.g : undefined;
     const total = Number(row.total || 0);
-    const naCount = Number(row.naCount || 0);
-    const validCount = total - naCount;
+    const validCount = Number(row.validCount || 0);
+    const naCount = total - validCount;
 
     let min = null, max = null, mean = null, stdDev = null;
     let quantiles = { d1: null, q1: null, median: null, q3: null, d9: null };
