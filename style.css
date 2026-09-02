@@ -1,7 +1,8 @@
 /* Grist Custom Widget stylesheet — pairs with app.js/index.html.
    Layout produced: indicator dropdown (.toolbar) > status banner (#status) >
    main_validation table (.panel #main-table-container) > year dropdown (.toolbar)
-   + stats table (#value-stats) + département bar chart (.panel #chart-container).
+   + stats table (#value-stats) + département value_new/value_old/écart table
+   (.panel #chart-container).
    Colors are theme tokens on :root so a dark-mode variant could be added later via
    a prefers-color-scheme override without touching selectors. */
 
@@ -12,14 +13,15 @@
   --bg-alt: #f7f8fa;
   --text: #1f2933;
   --text-muted: #616e7c;
-  --accent: #2f6f4e;
+  --accent: #34cb6a;
   --warn-bg: #fff4e5;
   --warn-text: #8a5a00;
   --error-bg: #fdecea;
   --error-text: #b3261e;
   --stat-neutral: #1f2933;
-  --stat-success: #1b5e33;
+  --stat-success: #34cb6a;
   --stat-danger: #8c1c13;
+  --niv-geo-badge-off: #d0c3b7;
 }
 
 * {
@@ -185,17 +187,56 @@ body {
   color: var(--error-text);
 }
 
-/* Same :empty trick as .status — hides the container when app.js has nothing to
-   chart (e.g. no numeric "value" column, or the current indicator has no rows). */
+/* Same :empty trick as .status — hides the container when app.js has nothing
+   to show (e.g. no numeric "value" column, or the current indicator has no
+   rows). */
 .chart-container:empty {
   display: none;
 }
 
-/* The chart itself is an Observable Plot SVG of fixed pixel width (see
-   renderDepartmentBars in js/stats-chart.js) — scroll rather than overflow the
-   page on narrow viewports. */
+/* Département value_new/value_old/écart table (see renderDepartmentValueTable
+   in js/stats-chart.js) — scroll rather than overflow the page on narrow
+   viewports. */
 .chart-container {
   overflow-x: auto;
+}
+
+/* Pastilles flagging which territorial-reform regime(s) (Rhône/Corse/Alsace
+   mergers, Mayotte) the current data_validation rows use — see
+   renderNivGeoBadges in js/stats-chart.js. */
+.niv-geo-badges:empty {
+  display: none;
+}
+
+.niv-geo-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.niv-geo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  font-size: 14px;
+  color: var(--text);
+}
+
+.niv-geo-badge-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--niv-geo-badge-off);
+  flex: none;
+}
+
+.niv-geo-badge--on .niv-geo-badge-dot {
+  background: var(--stat-success);
 }
 
 /* Distribution summary table (one row per niv_geo: effectif/NA/min/max/déciles/
@@ -210,12 +251,15 @@ body {
   overflow-x: auto;
 }
 
-.value-stats table {
+.value-stats table,
+.chart-container table {
   font-variant-numeric: tabular-nums;
 }
 
 .value-stats td,
-.value-stats th {
+.value-stats th,
+.chart-container td,
+.chart-container th {
   white-space: nowrap;
 }
 
@@ -231,7 +275,8 @@ table {
   background: var(--bg);
 }
 
-th, td {
+th,
+td {
   border: 1px solid var(--border);
   padding: 6px 8px;
   text-align: left;

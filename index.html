@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Validation BISO</title>
   <link rel="stylesheet" href="style.css" />
-  <script src="grist-plugin-api.js"></script>
+  <script src="http://localhost:8484/grist-plugin-api.js"></script>
 </head>
 
 <body>
@@ -28,6 +28,10 @@
     <div class="stat-box">
       <span class="stat-value stat-value--neutral" id="stat-todo">0</span>
       <span class="stat-label">À traiter</span>
+    </div>
+    <div class="stat-box">
+      <span class="stat-value stat-value--danger" id="stat-missing">0</span>
+      <span class="stat-label">Nombre d'indicateurs absent des données</span>
     </div>
   </div>
 
@@ -56,8 +60,12 @@
   <section class="panel">
     <div class="toolbar">
       <label for="annee-select">Année</label>
+      <button id="annee-prev" type="button" class="nav-button" aria-label="Précédent"><strong>&lt;</strong></button>
       <select id="annee-select"></select>
+      <button id="annee-next" type="button" class="nav-button" aria-label="Suivant"><strong>&gt;</strong></button>
+      <span id="annee-position" class="indicator-position"></span>
     </div>
+    <div id="niv-geo-badges" class="niv-geo-badges"></div>
     <div id="value-stats" class="value-stats"></div>
     <div id="chart-container" class="chart-container"></div>
   </section>

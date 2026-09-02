@@ -9,11 +9,10 @@ des 10 premières lignes correspondantes, saisie de `validation` (Oui/Non) et
 
 - `index.html` — structure de la page
 - `style.css` — mise en forme
-- `grist-plugin-api.js` — copie locale du script client Grist (voir "Instance Grist ciblée" ci-dessous)
 - `app.js` — point d'entrée (câblage des événements, initialisation), importe les modules ES `js/*.js` :
   - `js/dom.js` — références DOM et affichage du statut
   - `js/utils.js` — petites fonctions pures partagées
-  - `js/grist-api.js` — backend SQL local (DuckDB-Wasm) pour les requêtes sur `data_validation`
+  - `js/grist-api.js` — accès à l'API Grist (jeton, SQL, schéma)
   - `js/table-render.js` — rendu générique d'un tableau avec cellules éditables
   - `js/main-table.js` — table `main_validation` (indicateurs, compteurs)
   - `js/stats-chart.js` — table `data_validation` (année, statistiques, graphique)
@@ -28,65 +27,32 @@ des 10 premières lignes correspondantes, saisie de `validation` (Oui/Non) et
 
 ## Instance Grist ciblée
 
-Le script `grist-plugin-api.js` est servi en local (copie du fichier téléchargé
-depuis `https://grist.numerique.gouv.fr/grist-plugin-api.js`, committée à la
-racine du dépôt) plutôt que chargé directement depuis cette URL. Ce choix
-contourne un problème de protection anti-bot (Incapsula/Imperva) sur
-`grist.numerique.gouv.fr` : le premier appel au script renvoie une redirection
-307 accompagnée d'un cookie, et ce cookie n'est pas correctement renvoyé lors du
-rechargement quand le script est chargé depuis l'iframe (sandboxée, origine
-GitHub Pages) dans laquelle Grist exécute le widget — ce qui produit une boucle
-de redirections infinie (`ERR_TOO_MANY_REDIRECTS`) et empêche le script de se
-charger.
+`index.html` charge le script client Grist directement depuis l'instance ciblée
+(`<instance>/grist-plugin-api.js`) plutôt qu'une copie locale committée. En
+développement, ça pointe vers l'instance Docker locale
+(`http://localhost:8484/grist-plugin-api.js`, voir `docker-compose.yml`) ; en
+production il faut remplacer cette URL par celle de l'instance Grist réelle
+(ex. `https://grist.numerique.gouv.fr/grist-plugin-api.js`) avant déploiement.
 
-Le fichier lui-même ne code en dur aucune origine (ses appels `postMessage`
-utilisent `"*"` ou l'origine de l'expéditeur), donc le servir depuis un autre
-domaine que celui de l'instance Grist ne casse rien à l'exécution.
+Sur `grist.numerique.gouv.fr`, ce script (et l'API REST SQL, voir ci-dessous) se
+sont déjà heurtés par le passé à une protection anti-bot (Incapsula/Imperva) :
+redirections 307 en boucle (`ERR_TOO_MANY_REDIRECTS`) empêchant le script de se
+charger, ou requêtes `/sql` échouant en `Failed to fetch`. Si ça se reproduit,
+une copie locale du script (comme avant ce changement) ou un proxy same-origin
+pour l'API SQL sont les contournements à envisager.
 
-En revanche cette copie ne se met pas à jour automatiquement : si l'instance
-Grist (`https://grist.numerique.gouv.fr`) est un jour mise à niveau et que le
-protocole du plugin API change, il faudra retélécharger
-`https://grist.numerique.gouv.fr/grist-plugin-api.js` et remplacer le fichier
-local (une erreur `Unknown forward destination: grist` à l'initialisation est
-un signe possible de désynchronisation entre les deux). Si le document est un
-jour hébergé sur une autre instance Grist, il faudra aussi retélécharger le
-script depuis la nouvelle instance.
-
-## Statistiques sur `data_validation` (DuckDB-Wasm)
+## Statistiques sur `data_validation` (SQL Grist)
 
 `data_validation` peut contenir plusieurs centaines de milliers de lignes — trop
 pour recalculer des statistiques de distribution (déciles, quartiles, écart-type…)
-à la main en JS à chaque changement de filtre. Le widget appelait auparavant
-l'API REST SQL de Grist (`POST /api/docs/:docId/sql`) pour déléguer ce calcul au
-serveur, mais cet appel est une requête HTTP cross-origin directement depuis le
-widget vers `grist.numerique.gouv.fr`, qui se heurte à la même protection
-anti-bot (Incapsula/Imperva) que `grist-plugin-api.js` (redirections 307 en
-boucle → `Failed to fetch`) — voir la section précédente.
+à la main en JS à chaque changement de filtre. `js/grist-api.js` délègue donc ce
+calcul au serveur via l'API REST SQL de Grist (`POST /api/docs/:docId/sql`,
+lecture seule, contre le SQLite interne du document), atteinte via un jeton
+d'accès (`grist.docApi.getAccessToken`) — voir `runSql()`. Toutes les requêtes
+(statistiques par `niv_geo`, quantiles, graphique par département) tournent
+côté serveur ; aucune ligne de `data_validation` n'est jamais rapatriée dans le
+navigateur.
 
-À la place : `js/stats-chart.js` rapatrie `data_validation` en une fois via
-`grist.docApi.fetchTable()` (RPC `postMessage` entre le widget et la page Grist
-parente — jamais de requête réseau directe, donc insensible au WAF), puis
-`js/grist-api.js` charge ces lignes dans une base [DuckDB](https://duckdb.org/)
-en mémoire, dans le navigateur (via [DuckDB-Wasm](https://duckdb.org/docs/api/wasm/overview),
-chargé depuis jsDelivr). Toutes les requêtes SQL (statistiques par `niv_geo`,
-quantiles, graphique par département) tournent ensuite localement contre cette
-base — plus aucun appel réseau vers Grist une fois la table chargée. DuckDB
-diffère de SQLite sur quelques points dont le SQL de `stats-chart.js` tient
-compte : identifiants non quotés repliés en minuscules (d'où les alias
-`"naCount"`/`"meanSq"` explicitement quotés), `CAST` strict plutôt que permissif
-(`TRY_CAST` utilisé à la place), et `MAX(a, b)` scalaire absent (remplacé par
-`GREATEST(a, b)`).
-
-## Bibliothèques externes
-
-Chargées via import ES depuis jsDelivr (pas de build, pas de `node_modules`) :
-
-- [`@duckdb/duckdb-wasm`](https://duckdb.org/docs/api/wasm/overview) + [`apache-arrow`](https://arrow.apache.org/docs/js/) — voir "Statistiques sur `data_validation`" ci-dessus.
-- [`@observablehq/plot`](https://observablehq.com/plot/) — dessine le graphique en barres par département (`renderDepartmentBars` dans `js/stats-chart.js`), plutôt que du HTML/CSS fait main.
-
-Ces deux imports pointent vers une version précise (ex. `@observablehq/plot@0.6.17/+esm`)
-plutôt qu'une plage — à mettre à jour manuellement si besoin, `+esm` n'étant qu'un
-mode de livraison (bundle ES module), pas un mécanisme de versioning.
 
 ## Installation dans Grist
 

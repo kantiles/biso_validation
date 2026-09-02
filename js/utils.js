@@ -20,8 +20,11 @@ export function quoteIdent(id) {
   return '"' + String(id).replace(/"/g, '""') + '"';
 }
 
+// Virgule décimale, espace comme séparateur de milliers (format "fr-FR" —
+// toLocaleString y insère une espace insécable, pas une espace normale, mais
+// ça reste un espace visuellement).
 export function formatNumber(n) {
-  return Number.isInteger(n) ? String(n) : n.toFixed(2);
+  return n.toLocaleString("fr-FR", Number.isInteger(n) ? {} : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function formatNumberOrDash(n) {

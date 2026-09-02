@@ -1,34 +1,53 @@
 // Gestion de la table "data_validation" : sélecteur d'année, table de
-// statistiques de distribution et graphique en barres par département.
-//
-// Les lignes sont rapatriées une fois via grist.docApi.fetchTable() (RPC
-// postMessage, jamais de requête réseau directe — voir grist-api.js) puis
-// chargées dans une base DuckDB en mémoire dans le navigateur ; tous les calculs
-// ci-dessous (statistiques de distribution, quantiles, graphique) sont ensuite
-// des requêtes SQL contre cette base locale, jamais un rapatriement des lignes
-// une par une dans du JS. Le graphique lui-même est rendu avec Observable Plot
-// plutôt qu'en HTML/CSS fait main (voir renderDepartmentBars).
+// statistiques de distribution et tableau value_new/value_old/écart par
+// département — tout calculé côté serveur via SQL (voir grist-api.js), jamais
+// en rapatriant les lignes dans le navigateur.
 "use strict";
 
 import { quoteIdent, findColumn, formatNumber, formatNumberOrDash } from "./utils.js";
-import { runSql, loadTableIntoDuckDb } from "./grist-api.js";
-import { anneeSelect, chartContainer, valueStatsContainer, setStatus } from "./dom.js";
+import { runSql, getTableColumns } from "./grist-api.js";
+import {
+  anneeSelect,
+  anneePrevBtn,
+  anneeNextBtn,
+  anneePositionEl,
+  chartContainer,
+  valueStatsContainer,
+  nivGeoBadgesContainer,
+  setStatus,
+} from "./dom.js";
 import { getSelectedIndicator } from "./main-table.js";
-import * as Plot from "https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6.17/+esm";
 
 export const BOTTOM_TABLE_HINT = "data_validation";
 
-// Name of the local DuckDB table data_validation's rows are loaded into — an
-// identifier we control ourselves, independent of Grist's own internal table
-// id (bottomTableId, used only to call fetchTable).
-const DUCKDB_TABLE = "data_validation";
-
-// The "niv_geo" value that selects département-level rows for the bar chart
-// (see renderDepartmentChartFromSql).
+// The "niv_geo" value that selects département-level rows for the
+// value_new/value_old/écart table (see renderDepartmentValueTable).
 const DEP_NIV_GEO_VALUE = "dep";
 
-// "data_validation" state: the resolved column names — no row cache here (the
-// rows themselves live in DuckDB, not in a JS array, once loaded).
+// "niv_geo" values that each only ever have a single row (national-level
+// aggregates, not a distribution across several geo units) — excluded from the
+// per-niv_geo stats table, where a full distribution would be meaningless.
+// Compared case-insensitively.
+const NATIONAL_NIV_GEO_VALUES = new Set(["fr_ent", "fr_metro", "fr-ent_h_mayotte", "fr_ent_h_mayotte"]);
+
+// "code_geo" values (niv_geo = "dep") flagged by renderNivGeoBadges, grouped by
+// which territorial-reform regime they belong to — a group's badge only turns
+// on when every one of its codes has at least one non-NA row, since some
+// datasets only ever report one regime (e.g. "69" without "69D"/"69M").
+// Compared case-insensitively (see renderNivGeoBadges).
+const NIV_GEO_BADGE_GROUPS = [
+  { label: "Division Rhône", codes: ["69D", "69M"] },
+  { label: "Rhône regroupé", codes: ["69"] },
+  { label: "Mayotte", codes: ["976"] },
+  { label: "Division Corse", codes: ["2A", "2B"] },
+  { label: "CT Corse", codes: ["20R"] },
+  { label: "Division Alsace", codes: ["67", "68"] },
+  { label: "CE Alsace", codes: ["6AE"] },
+];
+
+// "data_validation" state: only the table id and the resolved column names are
+// kept — no row cache, since rows are never fetched (see the module doc above).
+let bottomTableId = null;
 let bottomSpecialCols = { idIndicateur: null, valueNew: null, valueOld: null, nivGeo: null, annee: null, codeGeo: null };
 
 // The year currently chosen in the "Année" dropdown (see populateAnneeSelect) —
@@ -37,22 +56,63 @@ let bottomSpecialCols = { idIndicateur: null, valueNew: null, valueOld: null, ni
 // for the same reason as main-table.js's selectedIndicator.
 let selectedAnnee = "";
 
-export function setSelectedAnnee(value) {
+// Sets the selected year (from the dropdown or the prev/next buttons), syncs
+// the <select>'s own value and the position/nav buttons, and re-renders the
+// stats table(s) and chart for it — mirrors selectIndicator() in main-table.js.
+export function selectAnnee(value) {
   selectedAnnee = value;
+  anneeSelect.value = value;
+  updateAnneeNav();
+  return renderStatsAndChart();
 }
 
-// Fetches data_validation in full via fetchTable() (postMessage RPC — the
-// table isn't astronomically large, just too big to recompute stats over in
-// hand-written JS on every filter change) and loads it into a local DuckDB
-// table, then resolves the columns this widget treats specially the same way
-// loadMainTable does for main_validation.
+// Moves the selection by `delta` positions (-1 = précédent, +1 = suivant)
+// within the dropdown's (most-recent-first) option list, clamped to the
+// first/last entry — mirrors stepIndicator() in main-table.js.
+export function stepAnnee(delta) {
+  const options = Array.from(anneeSelect.options);
+  if (options.length === 0) return Promise.resolve();
+
+  const currentIndex = options.findIndex((opt) => opt.value === selectedAnnee);
+  const nextIndex = Math.min(options.length - 1, Math.max(0, currentIndex + delta));
+  return selectAnnee(options[nextIndex].value);
+}
+
+// Keeps the "X / XX" position label and the prev/next buttons' disabled state
+// in sync with the current selection — mirrors updateIndicatorNav() in
+// main-table.js.
+function updateAnneeNav() {
+  const options = Array.from(anneeSelect.options);
+  const total = options.length;
+
+  if (total === 0) {
+    anneePositionEl.textContent = "";
+    anneePrevBtn.disabled = true;
+    anneeNextBtn.disabled = true;
+    return;
+  }
+
+  const currentIndex = options.findIndex((opt) => opt.value === selectedAnnee);
+  const position = currentIndex === -1 ? 0 : currentIndex + 1;
+  anneePositionEl.textContent = position + " / " + total;
+  anneePrevBtn.disabled = currentIndex <= 0;
+  anneeNextBtn.disabled = currentIndex === -1 || currentIndex >= total - 1;
+}
+
+// Resolves data_validation's column ids via schema introspection (getTableColumns)
+// — no data row is fetched, so this is cheap no matter how many rows the table
+// holds. idIndicateur/annee (filtering), valueNew (the stats/chart data),
+// valueOld (compared against valueNew for the écart distribution table), nivGeo
+// (the stats table's grouping column, and the chart's "dep" level filter) and
+// codeGeo (the chart's per-bar label) are needed, since no table is ever
+// rendered for data_validation.
 export async function loadBottomTable(tableId) {
+  bottomTableId = tableId;
   chartContainer.innerHTML = "";
   valueStatsContainer.innerHTML = "";
 
   try {
-    const data = await grist.docApi.fetchTable(tableId);
-    const columns = Object.keys(data).filter((k) => k !== "id" && k !== "manualSort");
+    const columns = await getTableColumns(tableId);
 
     bottomSpecialCols = {
       idIndicateur: findColumn(columns, "id_indicateur"),
@@ -76,12 +136,6 @@ export async function loadBottomTable(tableId) {
       setStatus("Attention : colonne \"value_old\" introuvable dans " + BOTTOM_TABLE_HINT + " : distribution des écarts indisponible.", "warn");
     }
 
-    const columnsData = {};
-    columns.forEach((col) => {
-      columnsData[col] = data[col];
-    });
-    await loadTableIntoDuckDb(DUCKDB_TABLE, columnsData);
-
     await populateAnneeSelect();
     await renderStatsAndChart();
   } catch (err) {
@@ -97,9 +151,10 @@ export async function populateAnneeSelect() {
   anneeSelect.innerHTML = "";
 
   const anneeCol = bottomSpecialCols.annee;
-  if (!anneeCol) {
+  if (!anneeCol || !bottomTableId) {
     anneeSelect.disabled = true;
     selectedAnnee = "";
+    updateAnneeNav();
     return;
   }
 
@@ -115,12 +170,8 @@ export async function populateAnneeSelect() {
   }
 
   const rows = await runSql(
-    "SELECT DISTINCT " + anneeId + " AS annee FROM " + quoteIdent(DUCKDB_TABLE) +
-      " WHERE " + whereParts.join(" AND ") +
-      // "annee" is stored as text (see normalizeColumn in grist-api.js) — sort
-      // numerically rather than lexicographically so e.g. "9" doesn't sort
-      // after "10".
-      " ORDER BY TRY_CAST(" + anneeId + " AS BIGINT) DESC",
+    "SELECT DISTINCT " + anneeId + " AS annee FROM " + quoteIdent(bottomTableId) +
+      " WHERE " + whereParts.join(" AND ") + " ORDER BY " + anneeId + " DESC",
     args
   );
 
@@ -135,27 +186,33 @@ export async function populateAnneeSelect() {
 
   selectedAnnee = values.length > 0 ? String(values[0]) : "";
   anneeSelect.value = selectedAnnee;
+  updateAnneeNav();
 }
 
 // Drives the per-niv_geo stats table(s) — one for "value_new", and (when
 // "value_old" exists) one for the écart between them — and the département-level
-// bar chart of "value_new", computed entirely by DuckDB queries against the
-// local copy of data_validation. All are scoped to the selected indicator and
-// (when data_validation has an "annee" column) the selected year.
+// value_new/value_old/écart table, computed entirely on the server with SQL
+// queries against data_validation — never all of its rows. All are scoped to
+// the selected indicator and (when data_validation has an "annee" column) the
+// selected year.
 export async function renderStatsAndChart() {
   chartContainer.innerHTML = "";
   valueStatsContainer.innerHTML = "";
+  nivGeoBadgesContainer.innerHTML = "";
 
   const valueCol = bottomSpecialCols.valueNew;
   if (!valueCol) return;
 
-  const table = quoteIdent(DUCKDB_TABLE);
+  const table = quoteIdent(bottomTableId);
   const valueId = quoteIdent(valueCol);
   const selectedIndicator = getSelectedIndicator();
 
   // Base WHERE (indicator + year only, NA rows included) — shared starting point
   // for the stats table(s) (which need NA counts) and the chart (which
   // additionally filters to "dep"-level rows and excludes NA rows below).
+  // Filtering by the selected indicator (when data_validation has that column)
+  // is what keeps each query fast — it should hit an index on id_indicateur
+  // rather than scan the full hundreds-of-millions-row table.
   const baseWhereParts = [];
   const baseArgs = [];
   if (bottomSpecialCols.idIndicateur && selectedIndicator) {
@@ -167,47 +224,136 @@ export async function renderStatsAndChart() {
     baseArgs.push(selectedAnnee);
   }
 
+  await renderNivGeoBadges(table, valueId, baseWhereParts, baseArgs);
+
   await renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, "Distribution de value_new");
 
   if (bottomSpecialCols.valueOld) {
     // A NULL value_new or value_old naturally makes the écart NULL too, so it
     // falls into the group's NA count the same way a missing value_new does above.
-    const ecartExpr = "(TRY_CAST(" + valueId + " AS DOUBLE) - TRY_CAST(" + quoteIdent(bottomSpecialCols.valueOld) + " AS DOUBLE))";
+    const ecartExpr = "(CAST(" + valueId + " AS REAL) - CAST(" + quoteIdent(bottomSpecialCols.valueOld) + " AS REAL))";
     await renderValueStatsTable(table, ecartExpr, baseWhereParts, baseArgs, "Distribution de l'écart (value_new − value_old)");
   }
 
-  await renderDepartmentChartFromSql(table, valueId, baseWhereParts, baseArgs);
+  await renderDepartmentValueTable(table, valueId, baseWhereParts, baseArgs);
 }
 
-// Bar chart of "value_new" at département level ("niv_geo" = DEP_NIV_GEO_VALUE),
-// one bar per "code_geo", for the selected indicator/year.
-async function renderDepartmentChartFromSql(table, valueId, baseWhereParts, baseArgs) {
+// Renders a pastille per NIV_GEO_BADGE_GROUPS entry — green when every code in
+// the group has at least one non-NA row for the selected indicator/year,
+// gray otherwise. Flags which territorial-reform regime(s) (Rhône/Corse/Alsace
+// mergers, plus Mayotte) the current data uses. Deliberately NOT filtered to
+// niv_geo = "dep": some of these codes (e.g. "20R"/"6AE", the Corse/Alsace
+// collectivités) sit at a different niv_geo level than ordinary départements,
+// so restricting to "dep" would always find them absent.
+async function renderNivGeoBadges(table, valueId, baseWhereParts, baseArgs) {
+  const codeGeoCol = bottomSpecialCols.codeGeo;
+  if (!codeGeoCol) return;
+
+  const codeGeoId = quoteIdent(codeGeoCol);
+  const whereParts = baseWhereParts.concat([valueId + " IS NOT NULL"]);
+  const args = baseArgs;
+  const where = "WHERE " + whereParts.join(" AND ");
+
+  const rows = await runSql(
+    "SELECT DISTINCT " + codeGeoId + " AS g FROM " + table + " " + where,
+    args
+  );
+  const presentCodes = new Set(
+    rows.map((row) => row.g).filter((g) => g !== null && g !== undefined).map((g) => String(g).trim().toUpperCase())
+  );
+
+  NIV_GEO_BADGE_GROUPS.forEach((group) => {
+    const isOn = group.codes.every((code) => presentCodes.has(code.toUpperCase()));
+
+    const badge = document.createElement("span");
+    badge.className = "niv-geo-badge " + (isOn ? "niv-geo-badge--on" : "niv-geo-badge--off");
+
+    const dot = document.createElement("span");
+    dot.className = "niv-geo-badge-dot";
+    badge.appendChild(dot);
+
+    badge.appendChild(document.createTextNode(group.label));
+    nivGeoBadgesContainer.appendChild(badge);
+  });
+}
+
+// Table of value_new / value_old / écart at département level ("niv_geo" =
+// DEP_NIV_GEO_VALUE), one row per "code_geo", for the selected indicator/year.
+async function renderDepartmentValueTable(table, valueId, baseWhereParts, baseArgs) {
   const nivGeoCol = bottomSpecialCols.nivGeo;
   const codeGeoCol = bottomSpecialCols.codeGeo;
   if (!nivGeoCol || !codeGeoCol) return;
 
   const codeGeoId = quoteIdent(codeGeoCol);
-  const whereParts = baseWhereParts.concat([
-    quoteIdent(nivGeoCol) + " = ?",
-    valueId + " IS NOT NULL",
-  ]);
+  const valueOldCol = bottomSpecialCols.valueOld;
+  const valueOldId = valueOldCol ? quoteIdent(valueOldCol) : null;
+
+  const whereParts = baseWhereParts.concat([quoteIdent(nivGeoCol) + " = ?"]);
   const args = baseArgs.concat([DEP_NIV_GEO_VALUE]);
   const where = "WHERE " + whereParts.join(" AND ");
-  const castValue = "TRY_CAST(" + valueId + " AS DOUBLE)";
+
+  const selectParts = [codeGeoId + " AS g", "CAST(" + valueId + " AS REAL) AS valueNew"];
+  if (valueOldId) {
+    selectParts.push("CAST(" + valueOldId + " AS REAL) AS valueOld");
+  }
 
   const rows = await runSql(
-    "SELECT " + codeGeoId + " AS g, " + castValue + " AS v FROM " + table + " " + where +
-      " ORDER BY " + codeGeoId,
+    "SELECT " + selectParts.join(", ") + " FROM " + table + " " + where + " ORDER BY " + codeGeoId,
     args
   );
 
   if (rows.length === 0) return;
 
-  const bars = rows
-    .filter((row) => row.g !== null && row.g !== undefined)
-    .map((row) => ({ label: String(row.g), value: Number(row.v) }));
+  const selectedIndicator = getSelectedIndicator();
+  const heading = document.createElement("h3");
+  heading.textContent = "value_new" + (valueOldId ? " / value_old / écart" : "") + " par département (dep)" +
+    (selectedIndicator ? " — " + selectedIndicator : "") +
+    (selectedAnnee ? " — " + selectedAnnee : "");
+  chartContainer.appendChild(heading);
 
-  renderDepartmentBars(bars);
+  const toNumberOrNull = (v) => (v === null || v === undefined ? null : Number(v));
+
+  const columns = [
+    ["code_geo", (r) => (r.g === null || r.g === undefined ? "—" : String(r.g))],
+    ["value_new", (r) => formatNumberOrDash(toNumberOrNull(r.valueNew))],
+  ];
+  if (valueOldId) {
+    columns.push(["value_old", (r) => formatNumberOrDash(toNumberOrNull(r.valueOld))]);
+    columns.push([
+      "Écart",
+      (r) => {
+        const vNew = toNumberOrNull(r.valueNew);
+        const vOld = toNumberOrNull(r.valueOld);
+        return vNew === null || vOld === null ? "—" : formatNumber(vNew - vOld);
+      },
+    ]);
+  }
+
+  const tableEl = document.createElement("table");
+
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  columns.forEach(([header]) => {
+    const th = document.createElement("th");
+    th.textContent = header;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  tableEl.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    columns.forEach(([, getValue]) => {
+      const td = document.createElement("td");
+      td.textContent = getValue(row);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  tableEl.appendChild(tbody);
+
+  chartContainer.appendChild(tableEl);
 }
 
 // Distribution summary table: one row per distinct value of "niv_geo" (or a
@@ -224,18 +370,15 @@ async function renderDepartmentChartFromSql(table, valueId, baseWhereParts, base
 async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, title) {
   const nivGeoCol = bottomSpecialCols.nivGeo;
   const nivGeoId = nivGeoCol ? quoteIdent(nivGeoCol) : null;
-  const castValue = "TRY_CAST(" + valueId + " AS DOUBLE)";
+  const castValue = "CAST(" + valueId + " AS REAL)";
   const where = baseWhereParts.length > 0 ? "WHERE " + baseWhereParts.join(" AND ") : "";
 
-  // Aliases "naCount"/"meanSq" are double-quoted to preserve their exact case —
-  // unlike SQLite, DuckDB folds unquoted identifiers to lowercase, which would
-  // otherwise silently rename them to naCount -> nacount / meanSq -> meansq.
   const groupRows = await runSql(
     "SELECT " + (nivGeoId ? nivGeoId + " AS g, " : "") +
       "COUNT(*) AS total, " +
-      "SUM(CASE WHEN " + valueId + " IS NULL THEN 1 ELSE 0 END) AS \"naCount\", " +
+      "SUM(CASE WHEN " + valueId + " IS NULL THEN 1 ELSE 0 END) AS naCount, " +
       "MIN(" + castValue + ") AS mn, MAX(" + castValue + ") AS mx, " +
-      "AVG(" + castValue + ") AS mean, AVG(" + castValue + " * " + castValue + ") AS \"meanSq\" " +
+      "AVG(" + castValue + ") AS mean, AVG(" + castValue + " * " + castValue + ") AS meanSq " +
       "FROM " + table + " " + where +
       (nivGeoId ? " GROUP BY " + nivGeoId + " ORDER BY " + nivGeoId : ""),
     baseArgs
@@ -284,6 +427,8 @@ async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, t
       nivGeoLabel: nivGeoCol
         ? rawGeo === null || rawGeo === undefined || rawGeo === "" ? "(vide)" : String(rawGeo)
         : "Tous",
+      isNational: nivGeoCol && rawGeo !== null && rawGeo !== undefined &&
+        NATIONAL_NIV_GEO_VALUES.has(String(rawGeo).trim().toLowerCase()),
       total,
       naCount,
       min,
@@ -294,7 +439,11 @@ async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, t
     });
   }
 
-  renderValueStatsRows(groups, title);
+  const tableGroups = groups.filter((g) => !g.isNational);
+
+  if (tableGroups.length > 0) {
+    renderValueStatsRows(tableGroups, title);
+  }
 }
 
 // Renders the groups computed by renderValueStatsTable() as a <table> — one row
@@ -352,17 +501,15 @@ function renderValueStatsRows(groups, title) {
 }
 
 // Nearest-rank D1/Q1/median/Q3/D9 in a single sorted pass over the filtered rows,
-// using window functions (ROW_NUMBER OVER) rather than five separate
-// "ORDER BY value LIMIT 1 OFFSET n" queries. This does require DuckDB to sort the
+// using window functions (ROW_NUMBER/COUNT OVER) rather than five separate
+// "ORDER BY value LIMIT 1 OFFSET n" queries. This does require SQLite to sort the
 // filtered subset — unavoidable for exact quantiles without a value-ordered
 // index or a pre-built approximation structure — but it's the one query that
 // does, and it's scoped to the current indicator's rows, not the whole table.
 async function fetchQuantiles(table, castValue, where, filterArgs, count) {
   // Rank (1-indexed) of the p-th nearest-rank quantile among `count` sorted
   // values — matches valueAt()'s Math.round(p * (count - 1)) + 1 below.
-  // GREATEST(a, b), not SQLite's two-argument scalar MAX(a, b) — DuckDB's MAX
-  // is aggregate-only.
-  const rankExpr = "GREATEST(CAST(ROUND(? * " + (count - 1) + ") AS INT) + 1, 1)";
+  const rankExpr = "MAX(CAST(ROUND(? * " + (count - 1) + ") AS INT) + 1, 1)";
   const ranks = [0.1, 0.25, 0.5, 0.75, 0.9];
 
   // filterArgs' placeholder(s) appear first in the SQL text (inside the
@@ -390,43 +537,3 @@ async function fetchQuantiles(table, castValue, where, filterArgs, count) {
   };
 }
 
-// One horizontal bar per département ("code_geo"), rendered with Observable
-// Plot — negative values just extend the bar left of the zero rule instead of
-// needing the abs()-based width hack a hand-rolled div/CSS bar chart needs.
-function renderDepartmentBars(bars) {
-  const selectedIndicator = getSelectedIndicator();
-
-  const title = document.createElement("h3");
-  title.textContent = "value_new par département (dep)" +
-    (selectedIndicator ? " — " + selectedIndicator : "") +
-    (selectedAnnee ? " — " + selectedAnnee : "");
-  chartContainer.appendChild(title);
-
-  const chart = Plot.plot({
-    width: Math.max(480, chartContainer.clientWidth || 0),
-    height: Math.max(200, bars.length * 20 + 40),
-    marginLeft: 60,
-    grid: true,
-    x: { label: "value_new" },
-    y: { label: null, domain: bars.map((b) => b.label) },
-    marks: [
-      Plot.ruleX([0]),
-      Plot.barX(bars, {
-        y: "label",
-        x: "value",
-        fill: (d) => (d.value < 0 ? "var(--stat-danger)" : "var(--accent)"),
-      }),
-      Plot.text(bars, {
-        y: "label",
-        x: "value",
-        text: (d) => formatNumber(d.value),
-        dx: (d) => (d.value < 0 ? -4 : 4),
-        textAnchor: (d) => (d.value < 0 ? "end" : "start"),
-        fill: "var(--text-muted)",
-        fontSize: 11,
-      }),
-    ],
-  });
-
-  chartContainer.appendChild(chart);
-}

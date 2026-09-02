@@ -3,8 +3,7 @@
 // index.html) :
 //   - js/dom.js         — références DOM et affichage du statut
 //   - js/utils.js        — petites fonctions pures partagées
-//   - js/grist-api.js    — backend SQL local (DuckDB-Wasm) pour les requêtes
-//                          sur data_validation
+//   - js/grist-api.js    — accès à l'API Grist (jeton, SQL, schéma)
 //   - js/table-render.js — rendu générique d'un <table> avec cellules éditables
 //   - js/main-table.js   — table "main_validation" (indicateurs, compteurs)
 //   - js/stats-chart.js  — table "data_validation" (année, stats, graphique)
@@ -15,8 +14,8 @@
 //   2. "main_validation" table — one row per indicator, with editable
 //      validation/commentaires cells. Filtered to the selected indicator.
 //   3. Year dropdown, distribution stats table (one row per "niv_geo" value,
-//      including a NA count), and a bar chart of the "value" column at
-//      département level ("niv_geo" = "dep", one bar per "code_geo") — all from
+//      including a NA count), and a value_new/value_old/écart table at
+//      département level ("niv_geo" = "dep", one row per "code_geo") — all from
 //      "data_validation", filtered to the selected indicator and year.
 //
 // Both table names are hardcoded (MAIN_TABLE_HINT / BOTTOM_TABLE_HINT, in
@@ -25,12 +24,23 @@
 "use strict";
 
 import { normalize } from "./js/utils.js";
-import { setStatus, validationFilter, anneeSelect, indicatorSelect, indicatorPrevBtn, indicatorNextBtn } from "./js/dom.js";
+import {
+  setStatus,
+  validationFilter,
+  anneeSelect,
+  anneePrevBtn,
+  anneeNextBtn,
+  indicatorSelect,
+  indicatorPrevBtn,
+  indicatorNextBtn,
+} from "./js/dom.js";
 import {
   MAIN_TABLE_HINT,
+  loadDataValidationIndicatorIds,
   loadMainTable,
   populateIndicatorSelect,
   renderMainFromCache,
+  renderStats,
   selectIndicator,
   stepIndicator,
 } from "./js/main-table.js";
@@ -39,15 +49,15 @@ import {
   loadBottomTable,
   populateAnneeSelect,
   renderStatsAndChart,
-  setSelectedAnnee,
+  selectAnnee,
+  stepAnnee,
 } from "./js/stats-chart.js";
 
 // Numéro de version du widget — à incrémenter à chaque changement (app.js,
-// n'importe quel fichier js/*.js, index.html ou style.css). Affiché en haut à
-// droite de la page (voir index.html) pour vérifier facilement, notamment
-// depuis Grist, que la dernière version déployée sur GitHub Pages est bien
-// celle chargée.
-const APP_VERSION = "5";
+// n'importe quel fichier js/*.js, index.html ou style.css). Affiché en bas de
+// page (voir index.html) pour vérifier facilement, notamment depuis Grist, que
+// la dernière version déployée sur GitHub Pages est bien celle chargée.
+const APP_VERSION = "15";
 document.getElementById("app-version").textContent = APP_VERSION;
 
 // Re-derives everything that depends on the selected indicator but isn't part of
@@ -87,6 +97,11 @@ async function init() {
   // (listTables/fetchTable).
   grist.ready({ requiredAccess: "full" });
 
+  const reportStatsError = (err) => {
+    console.error(err);
+    setStatus("Erreur lors du calcul des statistiques : " + err.message, "error");
+  };
+
   // Changing the indicator (via the dropdown or the prev/next buttons) only
   // re-filters already-cached rows — no refetch.
   indicatorSelect.addEventListener("change", () => {
@@ -95,15 +110,14 @@ async function init() {
   indicatorPrevBtn.addEventListener("click", () => stepIndicator(-1, refreshForIndicator));
   indicatorNextBtn.addEventListener("click", () => stepIndicator(1, refreshForIndicator));
 
-  // Changing the year only re-filters/re-aggregates data_validation for the
-  // already-selected indicator — the indicator list itself is untouched.
+  // Changing the year (via the dropdown or the prev/next buttons) only
+  // re-filters/re-aggregates data_validation for the already-selected
+  // indicator — the indicator list itself is untouched.
   anneeSelect.addEventListener("change", () => {
-    setSelectedAnnee(anneeSelect.value);
-    renderStatsAndChart().catch((err) => {
-      console.error(err);
-      setStatus("Erreur lors du calcul des statistiques : " + err.message, "error");
-    });
+    selectAnnee(anneeSelect.value).catch(reportStatsError);
   });
+  anneePrevBtn.addEventListener("click", () => stepAnnee(-1).catch(reportStatsError));
+  anneeNextBtn.addEventListener("click", () => stepAnnee(1).catch(reportStatsError));
 
   // Restricts which indicators show up in the dropdown/nav to those whose
   // main_validation row has this validation value — rebuilding the list picks a
@@ -111,10 +125,7 @@ async function init() {
   validationFilter.addEventListener("change", () => {
     populateIndicatorSelect();
     renderMainFromCache();
-    refreshForIndicator().catch((err) => {
-      console.error(err);
-      setStatus("Erreur lors du calcul des statistiques : " + err.message, "error");
-    });
+    refreshForIndicator().catch(reportStatsError);
   });
 
   try {
@@ -134,6 +145,17 @@ async function init() {
       setStatus("Table \"" + BOTTOM_TABLE_HINT + "\" introuvable dans ce document.", "error");
       return;
     }
+
+    // Now that data_validation's table id is known, resolve which indicators it
+    // actually has rows for and re-render main_validation's dropdown/stats
+    // against that — restricts the indicator list (an indicator with nothing in
+    // data_validation would leave the year dropdown/stats/chart permanently
+    // empty) and fills in the "indicateurs absent des données" counter.
+    await loadDataValidationIndicatorIds(bottomMatch);
+    populateIndicatorSelect();
+    renderMainFromCache();
+    renderStats();
+
     await loadBottomTable(bottomMatch);
   } catch (err) {
     console.error(err);

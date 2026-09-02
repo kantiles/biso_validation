@@ -3,18 +3,23 @@
 
 export const validationFilter = document.getElementById("validation-filter");
 export const anneeSelect = document.getElementById("annee-select");
+export const anneePrevBtn = document.getElementById("annee-prev");
+export const anneeNextBtn = document.getElementById("annee-next");
+export const anneePositionEl = document.getElementById("annee-position");
 export const indicatorSelect = document.getElementById("indicator-select");
 export const indicatorPrevBtn = document.getElementById("indicator-prev");
 export const indicatorNextBtn = document.getElementById("indicator-next");
 export const indicatorPositionEl = document.getElementById("indicator-position");
 export const statusEl = document.getElementById("status");
 export const chartContainer = document.getElementById("chart-container");
+export const nivGeoBadgesContainer = document.getElementById("niv-geo-badges");
 export const valueStatsContainer = document.getElementById("value-stats");
 export const mainTableContainer = document.getElementById("main-table-container");
 export const statTotalEl = document.getElementById("stat-total");
 export const statValidatedEl = document.getElementById("stat-validated");
 export const statToReviewEl = document.getElementById("stat-to-review");
 export const statTodoEl = document.getElementById("stat-todo");
+export const statMissingEl = document.getElementById("stat-missing");
 
 export function setStatus(message, level) {
   statusEl.textContent = message || "";

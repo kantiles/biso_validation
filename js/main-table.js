@@ -2,7 +2,8 @@
 // d'indicateur, compteurs globaux, et rendu de la table éditable.
 "use strict";
 
-import { normalize, findColumn } from "./utils.js";
+import { normalize, findColumn, quoteIdent } from "./utils.js";
+import { runSql, getTableColumns } from "./grist-api.js";
 import {
   mainTableContainer,
   indicatorSelect,
@@ -13,6 +14,7 @@ import {
   statValidatedEl,
   statToReviewEl,
   statTodoEl,
+  statMissingEl,
   validationFilter,
   setStatus,
 } from "./dom.js";
@@ -32,6 +34,35 @@ export const VALIDATION_FILTER_EMPTY = "__empty__";
 let mainTableId = null;
 let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null };
 let mainRows = [];
+
+// Distinct id_indicateur values found in data_validation — null until
+// loadDataValidationIndicatorIds() resolves (no filtering/counting happens
+// yet), a Set thereafter. Restricts the indicator dropdown (populateIndicatorSelect)
+// and drives the "absent" counter (renderStats) below.
+let dataValidationIndicatorIds = null;
+
+// Resolves data_validation's distinct id_indicateur values via a single
+// SELECT DISTINCT (not fetchTable — data_validation is too large to pull into
+// the browser, see grist-api.js) so the indicator dropdown can be restricted to
+// indicators that actually have data, and the "indicateurs absent des données"
+// counter can be computed. Safe to call even if data_validation has no
+// id_indicateur column (falls back to "no indicator has data" — an empty set —
+// rather than leaving the previous document's ids stale).
+export async function loadDataValidationIndicatorIds(tableId) {
+  const columns = await getTableColumns(tableId);
+  const idCol = findColumn(columns, "id_indicateur");
+  if (!idCol) {
+    dataValidationIndicatorIds = new Set();
+    return;
+  }
+
+  const idId = quoteIdent(idCol);
+  const rows = await runSql(
+    "SELECT DISTINCT " + idId + " AS id FROM " + quoteIdent(tableId) + " WHERE " + idId + " IS NOT NULL",
+    []
+  );
+  dataValidationIndicatorIds = new Set(rows.map((row) => String(row.id)));
+}
 
 // The indicator currently chosen in the dropdown — drives both renderMainFromCache()
 // and the stats/chart module. Always a string (Grist cell values are coerced with
@@ -113,15 +144,22 @@ export async function loadMainTable(tableId) {
 // status, computed from ALL of main_validation's rows (ignoring the Validation
 // filter and the selected indicator) so they always read as a global overview.
 // Counts distinct id_indicateur values, in case a table ever has duplicate rows
-// per indicator.
+// per indicator. "Indicateurs" (total) and "À traiter" exclude indicators
+// absent from data_validation (see loadDataValidationIndicatorIds) — nothing to
+// action on those, they're broken out into their own "absent des données"
+// counter instead. "Validés"/"À revoir" still count every main_validation row
+// regardless: a prior validation stays visible even if the data disappeared
+// since.
 export function renderStats() {
   const col = mainSpecialCols.idIndicateur;
   const validationCol = mainSpecialCols.validation;
 
   const seen = new Set();
+  let total = 0;
   let validated = 0;
   let toReview = 0;
   let todo = 0;
+  let missing = 0;
 
   mainRows.forEach((row) => {
     const id = col ? row[col] : null;
@@ -130,17 +168,25 @@ export function renderStats() {
     if (seen.has(key)) return;
     seen.add(key);
 
+    const isMissing = dataValidationIndicatorIds && !dataValidationIndicatorIds.has(key);
+    if (isMissing) {
+      missing++;
+    } else {
+      total++;
+    }
+
     const validationValue = validationCol ? row[validationCol] || "" : "";
     if (validationValue === "Oui") {
       validated++;
     } else if (validationValue === "Non") {
       toReview++;
-    } else {
+    } else if (!isMissing) {
       todo++;
     }
   });
 
-  statTotalEl.textContent = String(seen.size);
+  statTotalEl.textContent = String(total);
+  statMissingEl.textContent = String(missing);
   statValidatedEl.textContent = String(validated);
   statToReviewEl.textContent = String(toReview);
   statTodoEl.textContent = String(todo);
@@ -204,9 +250,12 @@ function matchesValidationFilter(row) {
 
 // Builds the indicator dropdown from the distinct id_indicateur values found in
 // main_validation, restricted to rows matching the "Validation" filter (see
-// matchesValidationFilter), sorted alphabetically, and defaults the selection to
-// the first one (i.e. the alphabetically-first indicator) — per spec, "prend par
-// défaut la première valeur".
+// matchesValidationFilter) AND to indicators that actually have data_validation
+// rows (dataValidationIndicatorIds, once loadDataValidationIndicatorIds has
+// resolved — selecting an indicator with nothing in data_validation would leave
+// the year dropdown/stats/chart below permanently empty), sorted alphabetically,
+// and defaults the selection to the first one (i.e. the alphabetically-first
+// indicator) — per spec, "prend par défaut la première valeur".
 export function populateIndicatorSelect() {
   indicatorSelect.innerHTML = "";
 
@@ -229,6 +278,7 @@ export function populateIndicatorSelect() {
     if (v === null || v === undefined || v === "") return;
     if (!matchesValidationFilter(row)) return;
     const s = String(v);
+    if (dataValidationIndicatorIds && !dataValidationIndicatorIds.has(s)) return;
     if (!seen.has(s)) {
       seen.add(s);
       values.push(s);
