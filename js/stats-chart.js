@@ -1,11 +1,17 @@
 // Gestion de la table "data_validation" : sélecteur d'année, table de
 // statistiques de distribution et tableaux value_new/value_old/écart par
-// département et par région — tout calculé côté serveur via SQL (voir
-// grist-api.js), jamais en rapatriant les lignes dans le navigateur.
+// département et par région — tout calculé côté client en JS sur la table
+// chargée une fois via fetchTable (voir ensureBottomTableLoaded ci-dessous).
+// L'API REST SQL de Grist (POST /api/docs/:docId/sql) a été abandonnée : elle
+// passe par un fetch() cross-origin direct (pas le canal RPC postMessage
+// qu'utilise fetchTable) et se fait bloquer par le WAF (Incapsula/Imperva) de
+// grist.numerique.gouv.fr, qui flague apparemment tout payload contenant du
+// SQL. data_validation reste d'une taille raisonnable (un CSV source d'environ
+// 20 Mo), donc la rapatrier entièrement une fois via fetchTable et calculer
+// les agrégats en JS est praticable.
 "use strict";
 
-import { quoteIdent, findColumn, formatNumber, formatNumberOrDash } from "./utils.js";
-import { runSql, getTableColumns } from "./grist-api.js";
+import { findColumn, formatNumber, formatNumberOrDash } from "./utils.js";
 import {
   anneeSelect,
   anneePrevBtn,
@@ -121,10 +127,12 @@ const NIV_GEO_BADGE_GROUPS = [
   { label: "CE Alsace", codes: ["6AE"] },
 ];
 
-// "data_validation" state: only the table id and the resolved column names are
-// kept — no row cache, since rows are never fetched (see the module doc above).
+// "data_validation" state: table id, resolved column names, and — unlike the
+// old SQL-backed version — a full row cache (see ensureBottomTableLoaded and
+// the module doc above).
 let bottomTableId = null;
 let bottomSpecialCols = { idIndicateur: null, valueNew: null, valueOld: null, nivGeo: null, annee: null, codeGeo: null };
+let bottomRows = [];
 
 // The year currently chosen in the "Année" dropdown (see populateAnneeSelect) —
 // built from the distinct "annee" values of data_validation for the selected
@@ -179,29 +187,66 @@ function updateAnneeNav() {
   anneeNextBtn.disabled = currentIndex <= 0;
 }
 
-// Resolves data_validation's column ids via schema introspection (getTableColumns)
-// — no data row is fetched, so this is cheap no matter how many rows the table
-// holds. idIndicateur/annee (filtering), valueNew (the stats/chart data),
-// valueOld (compared against valueNew for the écart distribution table), nivGeo
-// (the stats table's grouping column, and the chart's "dep" level filter) and
-// codeGeo (the chart's per-bar label) are needed, since no table is ever
-// rendered for data_validation.
-export async function loadBottomTable(tableId) {
+// Fetches data_validation in full via fetchTable (RPC — not the SQL REST
+// endpoint the WAF blocks, see the module doc above) and resolves its special
+// column names, exactly like loadMainTable() does for main_validation.
+// Memoized on tableId so it's safe to call from both loadDataValidationIndicatorIds
+// (main-table.js, called first during init) and loadBottomTable below without
+// fetching twice.
+async function ensureBottomTableLoaded(tableId) {
+  if (bottomTableId === tableId) return;
   bottomTableId = tableId;
+
+  const data = await grist.docApi.fetchTable(tableId);
+  const columns = Object.keys(data).filter((k) => k !== "id" && k !== "manualSort");
+
+  bottomSpecialCols = {
+    idIndicateur: findColumn(columns, "id_indicateur"),
+    valueNew: findColumn(columns, "value_new"),
+    valueOld: findColumn(columns, "value_old"),
+    nivGeo: findColumn(columns, "niv_geo"),
+    annee: findColumn(columns, "annee"),
+    codeGeo: findColumn(columns, "code_geo"),
+  };
+
+  const rowCount = data.id ? data.id.length : 0;
+  const rows = new Array(rowCount);
+  for (let i = 0; i < rowCount; i++) {
+    const row = {};
+    columns.forEach((col) => {
+      row[col] = data[col][i];
+    });
+    rows[i] = row;
+  }
+  bottomRows = rows;
+}
+
+// Loads (or reuses the cache for) data_validation and exposes it — called from
+// main-table.js's loadDataValidationIndicatorIds, which needs the row cache
+// before loadBottomTable below has run.
+export async function loadBottomTableRows(tableId) {
+  await ensureBottomTableLoaded(tableId);
+}
+
+// Distinct id_indicateur values found in data_validation's cached rows — empty
+// Set if the column is missing (mirrors the old SQL version's fallback).
+export function getBottomIndicatorIds() {
+  const col = bottomSpecialCols.idIndicateur;
+  const ids = new Set();
+  if (!col) return ids;
+  bottomRows.forEach((row) => {
+    const v = row[col];
+    if (v !== null && v !== undefined && v !== "") ids.add(String(v));
+  });
+  return ids;
+}
+
+export async function loadBottomTable(tableId) {
   chartContainer.innerHTML = "";
   valueStatsContainer.innerHTML = "";
 
   try {
-    const columns = await getTableColumns(tableId);
-
-    bottomSpecialCols = {
-      idIndicateur: findColumn(columns, "id_indicateur"),
-      valueNew: findColumn(columns, "value_new"),
-      valueOld: findColumn(columns, "value_old"),
-      nivGeo: findColumn(columns, "niv_geo"),
-      annee: findColumn(columns, "annee"),
-      codeGeo: findColumn(columns, "code_geo"),
-    };
+    await ensureBottomTableLoaded(tableId);
 
     if (!bottomSpecialCols.valueNew) {
       setStatus("Attention : colonne \"value_new\" introuvable dans " + BOTTOM_TABLE_HINT + " : graphique indisponible.", "warn");
@@ -241,21 +286,18 @@ export async function populateAnneeSelect() {
   anneeSelect.disabled = false;
 
   const selectedIndicator = getSelectedIndicator();
-  const anneeId = quoteIdent(anneeCol);
-  const whereParts = [anneeId + " IS NOT NULL"];
-  const args = [];
-  if (bottomSpecialCols.idIndicateur && selectedIndicator) {
-    whereParts.push(quoteIdent(bottomSpecialCols.idIndicateur) + " = ?");
-    args.push(selectedIndicator);
-  }
+  const idCol = bottomSpecialCols.idIndicateur;
 
-  const rows = await runSql(
-    "SELECT DISTINCT " + anneeId + " AS annee FROM " + quoteIdent(bottomTableId) +
-      " WHERE " + whereParts.join(" AND ") + " ORDER BY " + anneeId + " DESC",
-    args
-  );
+  const distinct = new Set();
+  bottomRows.forEach((row) => {
+    if (idCol && selectedIndicator && String(row[idCol]) !== selectedIndicator) return;
+    const v = row[anneeCol];
+    if (v === null || v === undefined) return;
+    distinct.add(String(v));
+  });
 
-  const values = rows.map((row) => row.annee).filter((v) => v !== null && v !== undefined);
+  // Most recent first, matching the old "ORDER BY annee DESC".
+  const values = Array.from(distinct).sort((a, b) => b.localeCompare(a, "fr", { numeric: true, sensitivity: "base" }));
 
   values.forEach((value) => {
     const option = document.createElement("option");
@@ -269,12 +311,41 @@ export async function populateAnneeSelect() {
   updateAnneeNav();
 }
 
+// `row[col]` as a Number, or null for a blank/missing cell — the JS equivalent
+// of the old SQL CAST(x AS REAL) for the null case. A non-empty non-numeric
+// string falls back to 0 (Number(x) is NaN), mirroring SQLite's own CAST,
+// which returns 0 rather than NULL when it can't parse a leading number.
+function toNumericOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+// Rows of bottomRows matching the selected indicator (when data_validation has
+// an id_indicateur column and one is selected) — no year filter.
+function rowsForIndicator() {
+  const idCol = bottomSpecialCols.idIndicateur;
+  const selectedIndicator = getSelectedIndicator();
+  if (!idCol || !selectedIndicator) return bottomRows;
+  return bottomRows.filter((row) => String(row[idCol]) === selectedIndicator);
+}
+
+// Rows of bottomRows matching the selected indicator AND (when data_validation
+// has an annee column) the selected year — the base scope for the stats
+// table(s) and chart below.
+function rowsForIndicatorAndYear() {
+  const anneeCol = bottomSpecialCols.annee;
+  const rows = rowsForIndicator();
+  if (!anneeCol || !selectedAnnee) return rows;
+  return rows.filter((row) => String(row[anneeCol]) === selectedAnnee);
+}
+
 // Drives the per-niv_geo stats table(s) — one for "value_new", and (when
 // "value_old" exists) one for the écart between them — and the département-level
-// value_new/value_old/écart table, computed entirely on the server with SQL
-// queries against data_validation — never all of its rows. All are scoped to
-// the selected indicator and (when data_validation has an "annee" column) the
-// selected year.
+// value_new/value_old/écart table, computed entirely in JS from the row cache
+// (see ensureBottomTableLoaded above) rather than never having data_validation
+// in the browser. All are scoped to the selected indicator and (when
+// data_validation has an "annee" column) the selected year.
 export async function renderStatsAndChart() {
   chartContainer.innerHTML = "";
   valueStatsContainer.innerHTML = "";
@@ -283,46 +354,31 @@ export async function renderStatsAndChart() {
   const valueCol = bottomSpecialCols.valueNew;
   if (!valueCol) return;
 
-  const table = quoteIdent(bottomTableId);
-  const valueId = quoteIdent(valueCol);
-  const selectedIndicator = getSelectedIndicator();
+  const indicatorRows = rowsForIndicator();
+  const baseRows = rowsForIndicatorAndYear();
 
-  // Indicator-only WHERE (no year) — used by the geo value tables below to
-  // pull value_new for the current year and the two previous ones in a single
-  // pass, regardless of which year is selected.
-  const indicatorWhereParts = [];
-  const indicatorArgs = [];
-  if (bottomSpecialCols.idIndicateur && selectedIndicator) {
-    indicatorWhereParts.push(quoteIdent(bottomSpecialCols.idIndicateur) + " = ?");
-    indicatorArgs.push(selectedIndicator);
-  }
+  renderNivGeoBadges(baseRows, valueCol);
 
-  // Base WHERE (indicator + year only, NA rows included) — shared starting point
-  // for the stats table(s) (which need NA counts) and the chart (which
-  // additionally filters to a geo level and excludes NA rows below).
-  // Filtering by the selected indicator (when data_validation has that column)
-  // is what keeps each query fast — it should hit an index on id_indicateur
-  // rather than scan the full hundreds-of-millions-row table.
-  const baseWhereParts = indicatorWhereParts.slice();
-  const baseArgs = indicatorArgs.slice();
-  if (bottomSpecialCols.annee && selectedAnnee) {
-    baseWhereParts.push(quoteIdent(bottomSpecialCols.annee) + " = ?");
-    baseArgs.push(selectedAnnee);
-  }
-
-  await renderNivGeoBadges(table, valueId, baseWhereParts, baseArgs);
-
-  await renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, "Distribution de Valeur - nouvelle");
+  renderValueStatsTable(baseRows, (row) => toNumericOrNull(row[valueCol]), "Distribution de Valeur - nouvelle");
 
   if (bottomSpecialCols.valueOld) {
-    // A NULL value_new or value_old naturally makes the écart NULL too, so it
-    // falls into the group's NA count the same way a missing value_new does above.
-    const ecartExpr = "(CAST(" + valueId + " AS REAL) - CAST(" + quoteIdent(bottomSpecialCols.valueOld) + " AS REAL))";
-    await renderValueStatsTable(table, ecartExpr, baseWhereParts, baseArgs, "Distribution de l'écart (Valeur - nouvelle − Valeur - ancienne)");
+    const valueOldCol = bottomSpecialCols.valueOld;
+    // A missing value_new or value_old naturally makes the écart null too, so
+    // it falls into the group's NA count the same way a missing value_new does
+    // above.
+    renderValueStatsTable(
+      baseRows,
+      (row) => {
+        const a = toNumericOrNull(row[valueCol]);
+        const b = toNumericOrNull(row[valueOldCol]);
+        return a === null || b === null ? null : a - b;
+      },
+      "Distribution de l'écart (Valeur - nouvelle − Valeur - ancienne)"
+    );
   }
 
-  await renderGeoValueTable(table, valueId, baseWhereParts, baseArgs, indicatorWhereParts, indicatorArgs, DEP_NIV_GEO_VALUE);
-  await renderGeoValueTable(table, valueId, baseWhereParts, baseArgs, indicatorWhereParts, indicatorArgs, REG_NIV_GEO_VALUE);
+  renderGeoValueTable(baseRows, indicatorRows, DEP_NIV_GEO_VALUE);
+  renderGeoValueTable(baseRows, indicatorRows, REG_NIV_GEO_VALUE);
 }
 
 // Renders a pastille per NIV_GEO_BADGE_GROUPS entry — green when every code in
@@ -332,22 +388,18 @@ export async function renderStatsAndChart() {
 // niv_geo = "dep": some of these codes (e.g. "20R"/"6AE", the Corse/Alsace
 // collectivités) sit at a different niv_geo level than ordinary départements,
 // so restricting to "dep" would always find them absent.
-async function renderNivGeoBadges(table, valueId, baseWhereParts, baseArgs) {
+function renderNivGeoBadges(baseRows, valueCol) {
   const codeGeoCol = bottomSpecialCols.codeGeo;
   if (!codeGeoCol) return;
 
-  const codeGeoId = quoteIdent(codeGeoCol);
-  const whereParts = baseWhereParts.concat([valueId + " IS NOT NULL"]);
-  const args = baseArgs;
-  const where = "WHERE " + whereParts.join(" AND ");
-
-  const rows = await runSql(
-    "SELECT DISTINCT " + codeGeoId + " AS g FROM " + table + " " + where,
-    args
-  );
-  const presentCodes = new Set(
-    rows.map((row) => row.g).filter((g) => g !== null && g !== undefined).map((g) => String(g).trim().toUpperCase())
-  );
+  const presentCodes = new Set();
+  baseRows.forEach((row) => {
+    const v = row[valueCol];
+    if (v === null || v === undefined || v === "") return;
+    const g = row[codeGeoCol];
+    if (g === null || g === undefined) return;
+    presentCodes.add(String(g).trim().toUpperCase());
+  });
 
   NIV_GEO_BADGE_GROUPS.forEach((group) => {
     const isOn = group.codes.every((code) => presentCodes.has(code.toUpperCase()));
@@ -368,59 +420,50 @@ async function renderNivGeoBadges(table, valueId, baseWhereParts, baseArgs) {
 // ("niv_geo" = `nivGeoValue`), one row per "code_geo", for the selected
 // indicator/year — plus value_new for the two previous years, so reviewers
 // can spot a trend without switching the Année dropdown back and forth.
-// `indicatorWhereParts`/`indicatorArgs` (no year filter) are what the prior-year
-// lookup runs against; `baseWhereParts`/`baseArgs` (indicator + selected year)
-// are what the current year's value_new/value_old columns run against, same as
-// before.
-async function renderGeoValueTable(table, valueId, baseWhereParts, baseArgs, indicatorWhereParts, indicatorArgs, nivGeoValue) {
+// `indicatorRows` (no year filter) is what the prior-year lookup runs against;
+// `baseRows` (indicator + selected year) is what the current year's
+// value_new/value_old columns run against, same as before.
+function renderGeoValueTable(baseRows, indicatorRows, nivGeoValue) {
   const nivGeoCol = bottomSpecialCols.nivGeo;
   const codeGeoCol = bottomSpecialCols.codeGeo;
   const anneeCol = bottomSpecialCols.annee;
+  const valueCol = bottomSpecialCols.valueNew;
   if (!nivGeoCol || !codeGeoCol) return;
 
-  const codeGeoId = quoteIdent(codeGeoCol);
   const valueOldCol = bottomSpecialCols.valueOld;
-  const valueOldId = valueOldCol ? quoteIdent(valueOldCol) : null;
-
-  const whereParts = baseWhereParts.concat([quoteIdent(nivGeoCol) + " = ?"]);
-  const args = baseArgs.concat([nivGeoValue]);
-  const where = "WHERE " + whereParts.join(" AND ");
-
-  const selectParts = [codeGeoId + " AS g", "CAST(" + valueId + " AS REAL) AS valueNew"];
-  if (valueOldId) {
-    selectParts.push("CAST(" + valueOldId + " AS REAL) AS valueOld");
-  }
-
-  const rows = await runSql(
-    "SELECT " + selectParts.join(", ") + " FROM " + table + " " + where,
-    args
-  );
-
   const normalizeCode = (g) => (g === null || g === undefined ? "" : String(g).trim().toUpperCase());
+  // niv_geo comparison is exact-string (matches the old SQL "= ?", which was
+  // case-sensitive), not normalized like code_geo below.
+  const matchesGeoLevel = (row) => String(row[nivGeoCol]) === nivGeoValue;
+
+  // Last row wins for a given code_geo, same as the old version's
+  // `new Map(rows.map(r => [normalizeCode(r.g), r]))` (Map overwrite on
+  // duplicate keys) in case data_validation has more than one row per code.
+  const rowsByCode = new Map();
+  baseRows.forEach((row) => {
+    if (!matchesGeoLevel(row)) return;
+    rowsByCode.set(normalizeCode(row[codeGeoCol]), {
+      g: row[codeGeoCol],
+      valueNew: toNumericOrNull(row[valueCol]),
+      valueOld: valueOldCol ? toNumericOrNull(row[valueOldCol]) : null,
+    });
+  });
 
   // value_new for the previous two years, keyed by code_geo then by year
-  // string — a single extra query (indicator + geo level, no year filter,
-  // annee IN (N-1, N-2)) rather than one per year/code.
+  // string.
   const priorYears = anneeCol && selectedAnnee && !Number.isNaN(Number(selectedAnnee))
     ? [Number(selectedAnnee) - 1, Number(selectedAnnee) - 2]
     : [];
   const priorByCode = new Map();
   if (priorYears.length > 0) {
-    const anneeId = quoteIdent(anneeCol);
-    const priorWhereParts = indicatorWhereParts.concat([
-      quoteIdent(nivGeoCol) + " = ?",
-      anneeId + " IN (" + priorYears.map(() => "?").join(", ") + ")",
-    ]);
-    const priorArgs = indicatorArgs.concat([nivGeoValue], priorYears);
-    const priorRows = await runSql(
-      "SELECT " + codeGeoId + " AS g, " + anneeId + " AS annee, CAST(" + valueId + " AS REAL) AS v FROM " + table +
-        " " + "WHERE " + priorWhereParts.join(" AND "),
-      priorArgs
-    );
-    priorRows.forEach((row) => {
-      const code = normalizeCode(row.g);
+    const priorYearStrs = priorYears.map(String);
+    indicatorRows.forEach((row) => {
+      if (!matchesGeoLevel(row)) return;
+      const yearStr = String(row[anneeCol]);
+      if (!priorYearStrs.includes(yearStr)) return;
+      const code = normalizeCode(row[codeGeoCol]);
       if (!priorByCode.has(code)) priorByCode.set(code, {});
-      priorByCode.get(code)[String(row.annee)] = row.v === null || row.v === undefined ? null : Number(row.v);
+      priorByCode.get(code)[yearStr] = toNumericOrNull(row[valueCol]);
     });
   }
 
@@ -429,7 +472,6 @@ async function renderGeoValueTable(table, valueId, baseWhereParts, baseArgs, ind
   // reference list, so nothing silently disappears) rather than only the
   // ones with data for the selected indicator/year — missing ones render as
   // "—" in every value column, same as any other null.
-  const rowsByCode = new Map(rows.map((r) => [normalizeCode(r.g), r]));
   const allCodes = Array.from(new Set([...Object.keys(GEO_LABELS[nivGeoValue] || {}), ...rowsByCode.keys()]));
   if (allCodes.length === 0) return;
 
@@ -487,7 +529,7 @@ async function renderGeoValueTable(table, valueId, baseWhereParts, baseArgs, ind
     ] },
   ];
 
-  if (valueOldId) {
+  if (valueOldCol) {
     groups.push({ title: "Valeur ancienne", subColumns: [
       [selectedAnnee || "—", (r) => formatNumberOrDash(toNumberOrNull(r.valueOld))],
     ] });
@@ -568,80 +610,83 @@ async function renderGeoValueTable(table, valueId, baseWhereParts, baseArgs, ind
   chartContainer.appendChild(tableEl);
 }
 
+// Nearest-rank D1/Q1/median/Q3/D9 over an ascending-sorted array of numbers —
+// rank (1-indexed) = max(round(p * (count - 1)) + 1, 1), matching the old
+// SQL version's window-function formula exactly.
+function computeQuantiles(sortedValues) {
+  const count = sortedValues.length;
+  const valueAt = (p) => sortedValues[Math.max(1, Math.round(p * (count - 1)) + 1) - 1];
+  return {
+    d1: valueAt(0.1),
+    q1: valueAt(0.25),
+    median: valueAt(0.5),
+    q3: valueAt(0.75),
+    d9: valueAt(0.9),
+  };
+}
+
 // Distribution summary table: one row per distinct value of "niv_geo" (or a
 // single "Tous" row when that column doesn't exist), each with its row count,
-// NA count (rows whose `valueId` expression is blank), and — when the group has
-// at least one non-NA value — min/max/déciles/moyenne/médiane/quartiles/écart-type/IQR.
-// `valueId` is a SQL value expression (a quoted column, or an arithmetic
-// expression such as the value_new/value_old écart) — not necessarily a plain
-// column identifier. `baseWhereParts`/`baseArgs` scope every query to the
-// selected indicator/year and deliberately do NOT exclude NA rows, since the NA
-// count itself is a per-group aggregate here. Appends its table (under `title`)
-// to valueStatsContainer without clearing it first, so callers can render
-// several distributions (value_new, écart…) into the same container.
-async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, title) {
+// NA count (rows where `valueOf(row)` is null), and — when the group has at
+// least one non-NA value — min/max/déciles/moyenne/médiane/quartiles/écart-type/IQR.
+// `valueOf` reads the value to aggregate from a row (a plain column read, or
+// an arithmetic expression such as the value_new/value_old écart).
+// `baseRows` scopes every group to the selected indicator/year and
+// deliberately includes NA rows, since the NA count itself is a per-group
+// aggregate here. Appends its table (under `title`) to valueStatsContainer
+// without clearing it first, so callers can render several distributions
+// (value_new, écart…) into the same container.
+function renderValueStatsTable(baseRows, valueOf, title) {
   const nivGeoCol = bottomSpecialCols.nivGeo;
-  const nivGeoId = nivGeoCol ? quoteIdent(nivGeoCol) : null;
-  const castValue = "CAST(" + valueId + " AS REAL)";
-  const where = baseWhereParts.length > 0 ? "WHERE " + baseWhereParts.join(" AND ") : "";
 
-  // grist.numerique.gouv.fr's WAF 403s this query even after casting only
-  // once in a subquery (see git history) — the remaining suspect is the
-  // CASE WHEN, a classic WAF-flagged SQLi pattern (used in blind/conditional
-  // injection probes). COUNT(v) already ignores NULLs on its own, so the NA
-  // count is just total - validCount, computed client-side instead — no CASE
-  // needed.
-  const innerSelect = "SELECT " + (nivGeoId ? nivGeoId + " AS g, " : "") + castValue + " AS v FROM " + table + " " + where;
-  const groupRows = await runSql(
-    "SELECT " + (nivGeoId ? "g, " : "") +
-      "COUNT(*) AS total, COUNT(v) AS validCount, " +
-      "MIN(v) AS mn, MAX(v) AS mx, " +
-      "AVG(v) AS mean, AVG(v * v) AS meanSq " +
-      "FROM (" + innerSelect + ")" +
-      (nivGeoId ? " GROUP BY g ORDER BY g" : ""),
-    baseArgs
-  );
+  const groupsByKey = new Map();
+  baseRows.forEach((row) => {
+    const rawGeo = nivGeoCol ? row[nivGeoCol] : undefined;
+    const key = nivGeoCol ? (rawGeo === null || rawGeo === undefined ? " null" : String(rawGeo)) : " all";
+    let group = groupsByKey.get(key);
+    if (!group) {
+      group = { rawGeo, total: 0, values: [] };
+      groupsByKey.set(key, group);
+    }
+    group.total++;
+    const v = valueOf(row);
+    if (v !== null) group.values.push(v);
+  });
 
-  if (groupRows.length === 0) return;
+  if (groupsByKey.size === 0) return;
 
-  const groups = [];
-  for (const row of groupRows) {
-    const rawGeo = nivGeoId ? row.g : undefined;
-    const total = Number(row.total || 0);
-    const validCount = Number(row.validCount || 0);
+  // Matches the old SQL version's "GROUP BY g ORDER BY g".
+  const sortedKeys = Array.from(groupsByKey.keys()).sort((a, b) => {
+    const sa = groupsByKey.get(a).rawGeo;
+    const sb = groupsByKey.get(b).rawGeo;
+    const strA = sa === null || sa === undefined ? "" : String(sa);
+    const strB = sb === null || sb === undefined ? "" : String(sb);
+    return strA.localeCompare(strB, "fr", { numeric: true, sensitivity: "base" });
+  });
+
+  const groups = sortedKeys.map((key) => {
+    const group = groupsByKey.get(key);
+    const rawGeo = group.rawGeo;
+    const total = group.total;
+    const validCount = group.values.length;
     const naCount = total - validCount;
 
     let min = null, max = null, mean = null, stdDev = null;
     let quantiles = { d1: null, q1: null, median: null, q3: null, d9: null };
 
-    if (validCount > 0 && row.mn !== null && row.mx !== null) {
-      min = Number(row.mn);
-      max = Number(row.mx);
-      mean = Number(row.mean);
-      const variance = Math.max(0, Number(row.meanSq) - mean * mean);
+    if (validCount > 0) {
+      const sorted = group.values.slice().sort((a, b) => a - b);
+      min = sorted[0];
+      max = sorted[sorted.length - 1];
+      const sum = sorted.reduce((acc, v) => acc + v, 0);
+      mean = sum / validCount;
+      const sumSq = sorted.reduce((acc, v) => acc + v * v, 0);
+      const variance = Math.max(0, sumSq / validCount - mean * mean);
       stdDev = Math.sqrt(variance);
-
-      if (max - min === 0) {
-        // Every value in this group is identical — no need to sort to know the
-        // quantiles.
-        quantiles = { d1: min, q1: min, median: min, q3: min, d9: min };
-      } else {
-        const groupWhereParts = baseWhereParts.concat([valueId + " IS NOT NULL"]);
-        const groupArgs = baseArgs.slice();
-        if (nivGeoId) {
-          if (rawGeo === null || rawGeo === undefined) {
-            groupWhereParts.push(nivGeoId + " IS NULL");
-          } else {
-            groupWhereParts.push(nivGeoId + " = ?");
-            groupArgs.push(rawGeo);
-          }
-        }
-        const groupWhere = "WHERE " + groupWhereParts.join(" AND ");
-        quantiles = await fetchQuantiles(table, castValue, groupWhere, groupArgs, validCount);
-      }
+      quantiles = computeQuantiles(sorted);
     }
 
-    groups.push({
+    return {
       nivGeoLabel: nivGeoCol
         ? rawGeo === null || rawGeo === undefined || rawGeo === "" ? "(vide)" : String(rawGeo)
         : "Tous",
@@ -654,8 +699,8 @@ async function renderValueStatsTable(table, valueId, baseWhereParts, baseArgs, t
       mean,
       stdDev,
       ...quantiles,
-    });
-  }
+    };
+  });
 
   const tableGroups = groups.filter((g) => !g.isNational);
 
@@ -716,42 +761,5 @@ function renderValueStatsRows(groups, title) {
   table.appendChild(tbody);
 
   valueStatsContainer.appendChild(table);
-}
-
-// Nearest-rank D1/Q1/median/Q3/D9 in a single sorted pass over the filtered rows,
-// using window functions (ROW_NUMBER/COUNT OVER) rather than five separate
-// "ORDER BY value LIMIT 1 OFFSET n" queries. This does require SQLite to sort the
-// filtered subset — unavoidable for exact quantiles without a value-ordered
-// index or a pre-built approximation structure — but it's the one query that
-// does, and it's scoped to the current indicator's rows, not the whole table.
-async function fetchQuantiles(table, castValue, where, filterArgs, count) {
-  // Rank (1-indexed) of the p-th nearest-rank quantile among `count` sorted
-  // values — matches valueAt()'s Math.round(p * (count - 1)) + 1 below.
-  const rankExpr = "MAX(CAST(ROUND(? * " + (count - 1) + ") AS INT) + 1, 1)";
-  const ranks = [0.1, 0.25, 0.5, 0.75, 0.9];
-
-  // filterArgs' placeholder(s) appear first in the SQL text (inside the
-  // "filtered" CTE's WHERE clause), followed by one "?" per rank (inside the
-  // final WHERE rn IN (...)) — args must be supplied in that same order.
-  const rows = await runSql(
-    "WITH filtered AS (SELECT " + castValue + " AS v FROM " + table + " " + where + "), " +
-      "ordered AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) AS rn FROM filtered) " +
-      "SELECT v, rn FROM ordered WHERE rn IN (" + ranks.map(() => rankExpr).join(", ") + ")",
-    [...filterArgs, ...ranks]
-  );
-
-  const byRank = new Map(rows.map((row) => [Number(row.rn), Number(row.v)]));
-  const valueAt = (p) => {
-    const rank = Math.max(1, Math.round(p * (count - 1)) + 1);
-    return byRank.has(rank) ? byRank.get(rank) : null;
-  };
-
-  return {
-    d1: valueAt(0.1),
-    q1: valueAt(0.25),
-    median: valueAt(0.5),
-    q3: valueAt(0.75),
-    d9: valueAt(0.9),
-  };
 }
 

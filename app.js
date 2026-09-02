@@ -3,10 +3,12 @@
 // index.html) :
 //   - js/dom.js         — références DOM et affichage du statut
 //   - js/utils.js        — petites fonctions pures partagées
-//   - js/grist-api.js    — accès à l'API Grist (jeton, SQL, schéma)
 //   - js/table-render.js — rendu générique d'un <table> avec cellules éditables
 //   - js/main-table.js   — table "main_validation" (indicateurs, compteurs)
-//   - js/stats-chart.js  — table "data_validation" (année, stats, graphique)
+//   - js/stats-chart.js  — table "data_validation" (année, stats, graphique) :
+//     chargée entièrement via fetchTable et cachée ; tous les calculs
+//     (distribution, quantiles, tableaux géo) tournent en JS, pas en SQL —
+//     voir son commentaire d'en-tête pour le pourquoi (WAF grist.numerique.gouv.fr)
 //
 // Layout (see index.html):
 //   1. Indicator dropdown (top) — the single source of truth for "which indicator
@@ -57,7 +59,7 @@ import {
 // n'importe quel fichier js/*.js, index.html ou style.css). Affiché en bas de
 // page (voir index.html) pour vérifier facilement, notamment depuis Grist, que
 // la dernière version déployée sur GitHub Pages est bien celle chargée.
-const APP_VERSION = "27";
+const APP_VERSION = "28";
 document.getElementById("app-version").textContent = APP_VERSION;
 
 // Re-derives everything that depends on the selected indicator but isn't part of

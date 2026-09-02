@@ -2,8 +2,8 @@
 // d'indicateur, compteurs globaux, et rendu de la table éditable.
 "use strict";
 
-import { normalize, findColumn, quoteIdent } from "./utils.js";
-import { runSql, getTableColumns } from "./grist-api.js";
+import { normalize, findColumn } from "./utils.js";
+import { loadBottomTableRows, getBottomIndicatorIds } from "./stats-chart.js";
 import {
   mainTableContainer,
   indicatorSelect,
@@ -41,27 +41,16 @@ let mainRows = [];
 // and drives the "absent" counter (renderStats) below.
 let dataValidationIndicatorIds = null;
 
-// Resolves data_validation's distinct id_indicateur values via a single
-// SELECT DISTINCT (not fetchTable — data_validation is too large to pull into
-// the browser, see grist-api.js) so the indicator dropdown can be restricted to
-// indicators that actually have data, and the "indicateurs absent des données"
-// counter can be computed. Safe to call even if data_validation has no
-// id_indicateur column (falls back to "no indicator has data" — an empty set —
-// rather than leaving the previous document's ids stale).
+// Resolves data_validation's distinct id_indicateur values so the indicator
+// dropdown can be restricted to indicators that actually have data, and the
+// "indicateurs absent des données" counter can be computed. Delegates to
+// stats-chart.js's row cache (loaded once via fetchTable — see
+// ensureBottomTableLoaded there) rather than running its own query. Safe to
+// call even if data_validation has no id_indicateur column (falls back to "no
+// indicator has data" — an empty set — via getBottomIndicatorIds()).
 export async function loadDataValidationIndicatorIds(tableId) {
-  const columns = await getTableColumns(tableId);
-  const idCol = findColumn(columns, "id_indicateur");
-  if (!idCol) {
-    dataValidationIndicatorIds = new Set();
-    return;
-  }
-
-  const idId = quoteIdent(idCol);
-  const rows = await runSql(
-    "SELECT DISTINCT " + idId + " AS id FROM " + quoteIdent(tableId) + " WHERE " + idId + " IS NOT NULL",
-    []
-  );
-  dataValidationIndicatorIds = new Set(rows.map((row) => String(row.id)));
+  await loadBottomTableRows(tableId);
+  dataValidationIndicatorIds = getBottomIndicatorIds();
 }
 
 // The indicator currently chosen in the dropdown — drives both renderMainFromCache()
