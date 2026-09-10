@@ -26,19 +26,18 @@ des 10 premières lignes correspondantes, saisie de `validation` (Oui/Non) et
 
 ## Instance Grist ciblée
 
-`index.html` charge le script client Grist directement depuis l'instance ciblée
-(`<instance>/grist-plugin-api.js`) plutôt qu'une copie locale committée. Les
-deux URLs possibles sont présentes dans `index.html` : celle de l'instance
-Docker locale (`http://localhost:8484/grist-plugin-api.js`, voir
-`docker-compose.yml`) en commentaire, et celle de l'instance de production
-(`https://grist.numerique.gouv.fr/grist-plugin-api.js`) active par défaut.
-Pour tester en local, commenter/décommenter les deux lignes en sens inverse.
+`index.html` charge une copie locale committée du script client Grist
+(`grist-plugin-api.js`) plutôt que l'URL de l'instance ciblée
+(`<instance>/grist-plugin-api.js`), gardée en commentaire pour référence.
+Le script client étant générique (pas spécifique à un document ni à une
+instance), cette même copie fonctionne aussi bien contre l'instance Docker
+locale que contre `grist.numerique.gouv.fr`.
 
-Sur `grist.numerique.gouv.fr`, ce script s'est déjà heurté par le passé à une
-protection anti-bot (Incapsula/Imperva) : redirections 307 en boucle
-(`ERR_TOO_MANY_REDIRECTS`) empêchant le script de se charger. Si ça se
-reproduit, une copie locale du script (comme avant ce changement) est le
-contournement à envisager.
+⚠️ Sur `grist.numerique.gouv.fr`, charger le script directement depuis l'URL
+de l'instance peut se heurter à une protection anti-bot (Incapsula/Imperva) :
+redirections 307 en boucle (`ERR_TOO_MANY_REDIRECTS`) empêchant le script de
+se charger — d'où la copie locale committée par défaut plutôt que l'URL de
+l'instance.
 
 ## Statistiques sur `data_validation`
 
@@ -46,25 +45,16 @@ contournement à envisager.
 être rapatrié entièrement dans le navigateur en un seul `fetchTable` (voir
 `ensureBottomTableLoaded` dans `js/stats-chart.js`), mis en cache, puis utilisé
 pour tous les calculs de distribution (déciles, quartiles, écart-type…),
-tableaux géo et badges, faits en JS à chaque changement de filtre — plutôt que
-recalculés côté serveur à chaque interaction.
+tableaux géo et badges, faits en JS à chaque changement de filtre.
 
-Ce choix remplace une version antérieure qui déléguait ces calculs à l'API REST
-SQL de Grist (`POST /api/docs/:docId/sql`, lecture seule contre le SQLite
-interne du document, atteinte via un jeton d'accès). Cette API a été
-abandonnée : contrairement à `fetchTable`/`listTables` (qui passent par le
-canal RPC `postMessage` entre le widget et Grist), elle nécessite un `fetch()`
-HTTP direct vers `grist.numerique.gouv.fr`, cross-origin — et le WAF de cette
-instance bloque ces requêtes (l'erreur apparaît côté navigateur comme une
-erreur CORS, faute d'en-têtes CORS dans la réponse du WAF), a priori en
-détectant la présence de mots-clés SQL dans le payload. Sans accès admin à
-l'instance pour faire whitelister ces requêtes, et sans backend pour les
-proxyfier en same-origin, la seule option restante était de se passer de `/sql`
-entièrement — praticable ici vu la taille modeste de `data_validation`, mais à
-reconsidérer si cette table venait à grossir significativement (le
-`fetchTable` deviendrait alors trop lourd, comme c'était déjà le cas dans
-l'ancien commentaire de code qui évoquait des centaines de millions de lignes).
-
+⚠️ L'API REST SQL de Grist (`POST /api/docs/:docId/sql`) n'est pas utilisable
+ici : contrairement à `fetchTable`/`listTables` (canal RPC `postMessage` entre
+le widget et Grist), elle nécessite un `fetch()` HTTP direct cross-origin vers
+`grist.numerique.gouv.fr`, et le WAF de cette instance bloque ces requêtes
+(erreur CORS côté navigateur, faute d'en-têtes CORS dans la réponse du WAF),
+a priori en détectant des mots-clés SQL dans le payload. À reconsidérer si
+`data_validation` grossit significativement (le `fetchTable` deviendrait alors
+trop lourd).
 
 ## Installation dans Grist
 
@@ -94,9 +84,26 @@ crée jamais de colonne automatiquement).
 Le coin supérieur droit du widget affiche `vN` (constante `APP_VERSION` en haut de
 `app.js`). Comme il n'y a ni build ni cache-busting, c'est le seul moyen simple
 de vérifier depuis Grist que la version chargée est bien la dernière déployée
-sur GitHub Pages (utile par exemple après un changement qui semble ne pas
-s'appliquer). **À incrémenter de 1 à chaque modification** d'un des fichiers du
-widget (`app.js`, `js/*.js`, `index.html`, `style.css`).
+sur GitHub Pages. **À incrémenter de 1 à chaque modification** d'un des
+fichiers du widget (`app.js`, `js/*.js`, `index.html`, `style.css`).
+
+## Test local (avec Grist, Docker)
+
+⚠️ Les tests locaux se font avec `docker-compose.yml`, pas en ouvrant
+`index.html` directement — le widget a besoin d'être chargé en iframe par un
+vrai Grist (RPC `postMessage`, `docApi`, etc.), ce qu'un simple serveur de
+fichiers statiques ne peut pas simuler.
+
+```bash
+docker compose up --build
+```
+
+Démarre une instance Grist locale (`http://localhost:8484`) et sert ce dépôt
+en statique à sa place de GitHub Pages (`http://localhost:8585`, rechargement
+à chaud via bind-mount — voir `docker-compose.yml`). Dans Grist, créer/ouvrir
+un document avec les tables `main_validation` et `data_validation`, ajouter le
+widget comme Custom Widget (voir "Installation dans Grist" ci-dessus) en
+collant `http://localhost:8585/index.html` comme URL.
 
 ## Test local (hors Grist)
 
@@ -105,4 +112,8 @@ python3 -m http.server
 ```
 
 Puis ouvrir `http://localhost:8000`. Hors du contexte Grist, le widget affiche
-un message indiquant qu'il doit être ouvert en tant que Custom Widget.
+seulement un message indiquant qu'il doit être ouvert en tant que Custom
+Widget — utile pour vérifier que les fichiers statiques se servent
+correctement, pas pour tester le widget lui-même (voir section Docker
+ci-dessus pour ça).
+</content>
