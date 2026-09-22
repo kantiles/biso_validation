@@ -312,11 +312,13 @@ export async function populateAnneeSelect() {
 }
 
 // `row[col]` as a Number, or null for a blank/missing cell — the JS equivalent
-// of the old SQL CAST(x AS REAL) for the null case. A non-empty non-numeric
+// of the old SQL CAST(x AS REAL) for the null case. "NA" (R's missing-value
+// marker, as it appears in CSV sources feeding data_validation) is treated as
+// missing too, not as a non-numeric string. Any other non-empty non-numeric
 // string falls back to 0 (Number(x) is NaN), mirroring SQLite's own CAST,
 // which returns 0 rather than NULL when it can't parse a leading number.
 function toNumericOrNull(v) {
-  if (v === null || v === undefined || v === "") return null;
+  if (v === null || v === undefined || v === "" || v === "NA") return null;
   const n = Number(v);
   return Number.isNaN(n) ? 0 : n;
 }
