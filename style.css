@@ -335,6 +335,28 @@ td input[type="text"] {
   resize: vertical;
 }
 
+/* Leading documentation-link column of the main_validation table (see
+   buildDocLink in js/table-render.js): kept as narrow as the icon. */
+td.doc-link-cell {
+  width: 1%;
+  text-align: center;
+}
+
+.doc-link {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.doc-link svg {
+  display: block;
+}
+
+.doc-link--empty {
+  color: var(--text-muted);
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* Transient feedback classes toggled by app.js's updateCell() while an edit is
    being saved to Grist, and briefly after it succeeds. */
 td.saving {

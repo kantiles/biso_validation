@@ -39,7 +39,10 @@ export function renderTable(container, displayColumns, rows, specialCols, tableI
     displayColumns.forEach(({ key }) => {
       const td = document.createElement("td");
 
-      if (key === specialCols.validation) {
+      if (key === specialCols.urlDoc) {
+        td.className = "doc-link-cell";
+        td.appendChild(buildDocLink(row[key]));
+      } else if (key === specialCols.validation) {
         td.appendChild(buildValidationSelect(row, specialCols, tableId, onCellSaved));
       } else if (key === specialCols.commentaires) {
         td.appendChild(buildCommentInput(row, specialCols, tableId, onCellSaved));
@@ -54,6 +57,33 @@ export function renderTable(container, displayColumns, rows, specialCols, tableI
   table.appendChild(tbody);
 
   container.appendChild(table);
+}
+
+// Link icon to the indicator's documentation page. An empty url_doc still
+// renders the icon (keeps the column aligned) but as an <a> without href, so it
+// points nowhere — dimmed via .doc-link--empty in style.css. Opens in a new tab
+// since the widget lives in Grist's iframe.
+function buildDocLink(url) {
+  const link = document.createElement("a");
+  link.className = "doc-link";
+  link.innerHTML =
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
+    '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>' +
+    "</svg>";
+
+  const href = url ? String(url).trim() : "";
+  if (href) {
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.title = "Documentation de l'indicateur";
+  } else {
+    link.classList.add("doc-link--empty");
+    link.title = "Pas de documentation";
+  }
+  link.setAttribute("aria-label", link.title);
+  return link;
 }
 
 // Fixed "Oui" / "Non" / "—" (empty) choices — validation is a tri-state flag, not

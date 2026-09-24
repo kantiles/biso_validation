@@ -32,7 +32,7 @@ export const VALIDATION_FILTER_EMPTY = "__empty__";
 // resolved column names for the fields we treat specially, and the cached rows
 // (avoids refetching from Grist on every filter change).
 let mainTableId = null;
-let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null };
+let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null, urlDoc: null };
 let mainRows = [];
 
 // Distinct id_indicateur values found in data_validation — null until
@@ -90,6 +90,7 @@ export async function loadMainTable(tableId) {
     libelle: libelleCol,
     validation: findColumn(columns, "validation"),
     commentaires: findColumn(columns, "commentaires"),
+    urlDoc: findColumn(columns, "url_doc"),
   };
 
   // fetchTable's column-of-arrays shape is turned into one object per row (row-of-
@@ -115,6 +116,9 @@ export async function loadMainTable(tableId) {
   }
   if (!mainSpecialCols.commentaires) {
     warnings.push("colonne \"commentaires\" introuvable dans " + MAIN_TABLE_HINT + " : saisie désactivée");
+  }
+  if (!mainSpecialCols.urlDoc) {
+    warnings.push("colonne \"url_doc\" introuvable dans " + MAIN_TABLE_HINT + " : lien vers la documentation indisponible");
   }
   if (warnings.length > 0) {
     setStatus("Attention : " + warnings.join(" ; ") + ".", "warn");
@@ -211,6 +215,11 @@ export function renderMainFromCache() {
   // hidden and the header text stays human-readable regardless of the underlying
   // Grist column names.
   const displayColumns = [];
+  // Leading link-icon column pointing at the indicator's documentation (url_doc)
+  // — no header text, the icon speaks for itself.
+  if (mainSpecialCols.urlDoc) {
+    displayColumns.push({ key: mainSpecialCols.urlDoc, header: "" });
+  }
   if (mainSpecialCols.idIndicateur) {
     displayColumns.push({ key: mainSpecialCols.idIndicateur, header: "id_indicateur" });
   }
