@@ -290,7 +290,7 @@ export async function populateAnneeSelect() {
 
   const distinct = new Set();
   bottomRows.forEach((row) => {
-    if (idCol && selectedIndicator && String(row[idCol]) !== selectedIndicator) return;
+    if (idCol && (!selectedIndicator || String(row[idCol]) !== selectedIndicator)) return;
     const v = row[anneeCol];
     if (v === null || v === undefined) return;
     distinct.add(String(v));
@@ -324,11 +324,12 @@ function toNumericOrNull(v) {
 }
 
 // Rows of bottomRows matching the selected indicator (when data_validation has
-// an id_indicateur column and one is selected) — no year filter.
+// an id_indicateur column; none when no indicator is selected) — no year filter.
 function rowsForIndicator() {
   const idCol = bottomSpecialCols.idIndicateur;
   const selectedIndicator = getSelectedIndicator();
-  if (!idCol || !selectedIndicator) return bottomRows;
+  if (!idCol) return bottomRows;
+  if (!selectedIndicator) return [];
   return bottomRows.filter((row) => String(row[idCol]) === selectedIndicator);
 }
 

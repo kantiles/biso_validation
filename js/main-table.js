@@ -197,9 +197,12 @@ function handleCellSaved(rowId, colName, value) {
 export function renderMainFromCache() {
   let rows = mainRows;
 
-  if (mainSpecialCols.idIndicateur && selectedIndicator) {
+  // No selected indicator (e.g. the Validation filter left no eligible one)
+  // means no rows — not all rows — so the table stays consistent with the
+  // (empty) dropdown.
+  if (mainSpecialCols.idIndicateur) {
     const col = mainSpecialCols.idIndicateur;
-    rows = rows.filter((row) => String(row[col]) === selectedIndicator);
+    rows = rows.filter((row) => selectedIndicator && String(row[col]) === selectedIndicator);
   }
 
   // The table is rendered from a fixed, explicit list of {key, header} pairs
