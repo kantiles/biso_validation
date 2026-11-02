@@ -169,9 +169,9 @@ export function renderStats() {
     }
 
     const validationValue = validationCol ? row[validationCol] || "" : "";
-    if (validationValue === "Oui") {
+    if (validationValue === "Validé Kantiles" || validationValue === "Validé Drees") {
       validated++;
-    } else if (validationValue === "Non") {
+    } else if (validationValue === "A revoir") {
       toReview++;
     } else if (!isMissing) {
       todo++;
@@ -238,7 +238,7 @@ export function renderMainFromCache() {
 
 // Whether a main_validation row's "validation" cell matches the global
 // validation filter — "" (Tous) always matches, VALIDATION_FILTER_EMPTY matches
-// an unset/blank cell, anything else matches by exact value ("Oui"/"Non").
+// an unset/blank cell, anything else matches by exact value ("Validé Kantiles"/"Validé Drees"/"A revoir").
 function matchesValidationFilter(row) {
   const filterValue = validationFilter.value;
   if (!filterValue) return true;

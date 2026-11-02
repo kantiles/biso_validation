@@ -2,7 +2,7 @@
 
 Widget custom Grist (HTML/CSS/JS statique, sans build) pour valider des indicateurs :
 sélection d'une feuille (table) du document, filtrage sur `id_indicateur`, affichage
-des 10 premières lignes correspondantes, saisie de `validation` (Oui/Non) et
+des 10 premières lignes correspondantes, saisie de `validation` (Validé Kantiles / Validé Drees / A revoir) et
 `commentaires` écrite directement dans le document Grist.
 
 ## Fichiers
@@ -72,7 +72,7 @@ Pour que la validation et les commentaires fonctionnent sur une feuille donnée,
 celle-ci doit contenir des colonnes nommées (insensible à la casse) :
 
 - `id_indicateur` — utilisée pour le filtre
-- `validation` — recevra `Oui` / `Non`
+- `validation` — recevra `Validé Kantiles` / `Validé Drees` / `A revoir`
 - `commentaires` — texte libre
 
 Si une de ces colonnes est absente sur la feuille sélectionnée, le widget

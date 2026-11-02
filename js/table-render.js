@@ -86,11 +86,11 @@ function buildDocLink(url) {
   return link;
 }
 
-// Fixed "Oui" / "Non" / "—" (empty) choices — validation is a tri-state flag, not
+// Fixed "Validé Kantiles" / "Validé Drees" / "A revoir" / "—" (empty) choices — validation is not
 // free text, so a <select> is used instead of a text input.
 function buildValidationSelect(row, specialCols, tableId, onCellSaved) {
   const select = document.createElement("select");
-  ["", "Oui", "Non"].forEach((opt) => {
+  ["", "Validé Kantiles", "Validé Drees", "A revoir"].forEach((opt) => {
     const option = document.createElement("option");
     option.value = opt;
     option.textContent = opt === "" ? "—" : opt;
