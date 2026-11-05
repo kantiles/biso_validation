@@ -11,7 +11,8 @@ import {
   indicatorNextBtn,
   indicatorPositionEl,
   statTotalEl,
-  statValidatedEl,
+  statValidatedKantilesEl,
+  statValidatedDreesEl,
   statToReviewEl,
   statTodoEl,
   statMissingEl,
@@ -140,7 +141,7 @@ export async function loadMainTable(tableId) {
 // per indicator. "Indicateurs" (total) and "À traiter" exclude indicators
 // absent from data_validation (see loadDataValidationIndicatorIds) — nothing to
 // action on those, they're broken out into their own "absent des données"
-// counter instead. "Validés"/"À revoir" still count every main_validation row
+// counter instead. "Validés Kantiles"/"Validés Drees"/"À revoir" still count every main_validation row
 // regardless: a prior validation stays visible even if the data disappeared
 // since.
 export function renderStats() {
@@ -149,7 +150,8 @@ export function renderStats() {
 
   const seen = new Set();
   let total = 0;
-  let validated = 0;
+  let validatedKantiles = 0;
+  let validatedDrees = 0;
   let toReview = 0;
   let todo = 0;
   let missing = 0;
@@ -169,8 +171,10 @@ export function renderStats() {
     }
 
     const validationValue = validationCol ? row[validationCol] || "" : "";
-    if (validationValue === "Validé Kantiles" || validationValue === "Validé Drees") {
-      validated++;
+    if (validationValue === "Validé Kantiles") {
+      validatedKantiles++;
+    } else if (validationValue === "Validé Drees") {
+      validatedDrees++;
     } else if (validationValue === "A revoir") {
       toReview++;
     } else if (!isMissing) {
@@ -180,7 +184,8 @@ export function renderStats() {
 
   statTotalEl.textContent = String(total);
   statMissingEl.textContent = String(missing);
-  statValidatedEl.textContent = String(validated);
+  statValidatedKantilesEl.textContent = String(validatedKantiles);
+  statValidatedDreesEl.textContent = String(validatedDrees);
   statToReviewEl.textContent = String(toReview);
   statTodoEl.textContent = String(todo);
 }
