@@ -30,6 +30,10 @@ export const BOTTOM_TABLE_HINT = "data_validation";
 // value_new/value_old/écart tables (see renderGeoValueTable).
 const DEP_NIV_GEO_VALUE = "dep";
 const REG_NIV_GEO_VALUE = "reg";
+// Pseudo "niv_geo" key for the national table: one row per niv_geo in
+// NATIONAL_TABLE_NIV_GEOS (France entière, hors Mayotte, métropole), in this order.
+const NATIONAL_TABLE_KEY = "national";
+const NATIONAL_TABLE_NIV_GEOS = ["fr_ent", "fr_ent_h_mayotte", "fr_metro"];
 
 // "niv_geo" values that each only ever have a single row (national-level
 // aggregates, not a distribution across several geo units) — excluded from the
@@ -382,6 +386,7 @@ export async function renderStatsAndChart() {
 
   renderGeoValueTable(baseRows, indicatorRows, DEP_NIV_GEO_VALUE);
   renderGeoValueTable(baseRows, indicatorRows, REG_NIV_GEO_VALUE);
+  renderGeoValueTable(baseRows, indicatorRows, NATIONAL_TABLE_KEY);
 }
 
 // Renders a pastille per NIV_GEO_BADGE_GROUPS entry — green when every code in
@@ -437,7 +442,13 @@ function renderGeoValueTable(baseRows, indicatorRows, nivGeoValue) {
   const normalizeCode = (g) => (g === null || g === undefined ? "" : String(g).trim().toUpperCase());
   // niv_geo comparison is exact-string (matches the old SQL "= ?", which was
   // case-sensitive), not normalized like code_geo below.
-  const matchesGeoLevel = (row) => String(row[nivGeoCol]) === nivGeoValue;
+  const isNational = nivGeoValue === NATIONAL_TABLE_KEY;
+  const matchesGeoLevel = isNational
+    ? (row) => NATIONAL_TABLE_NIV_GEOS.includes(String(row[nivGeoCol]).trim().toLowerCase())
+    : (row) => String(row[nivGeoCol]) === nivGeoValue;
+  // The national table is keyed by niv_geo itself (its rows have no meaningful
+  // code_geo); other levels by code_geo.
+  const keyCol = isNational ? nivGeoCol : codeGeoCol;
 
   // Last row wins for a given code_geo, same as the old version's
   // `new Map(rows.map(r => [normalizeCode(r.g), r]))` (Map overwrite on
@@ -445,8 +456,8 @@ function renderGeoValueTable(baseRows, indicatorRows, nivGeoValue) {
   const rowsByCode = new Map();
   baseRows.forEach((row) => {
     if (!matchesGeoLevel(row)) return;
-    rowsByCode.set(normalizeCode(row[codeGeoCol]), {
-      g: row[codeGeoCol],
+    rowsByCode.set(normalizeCode(row[keyCol]), {
+      g: row[keyCol],
       valueNew: toNumericOrNull(row[valueCol]),
       valueOld: valueOldCol ? toNumericOrNull(row[valueOldCol]) : null,
     });
@@ -464,7 +475,7 @@ function renderGeoValueTable(baseRows, indicatorRows, nivGeoValue) {
       if (!matchesGeoLevel(row)) return;
       const yearStr = String(row[anneeCol]);
       if (!priorYearStrs.includes(yearStr)) return;
-      const code = normalizeCode(row[codeGeoCol]);
+      const code = normalizeCode(row[keyCol]);
       if (!priorByCode.has(code)) priorByCode.set(code, {});
       priorByCode.get(code)[yearStr] = toNumericOrNull(row[valueCol]);
     });
@@ -475,10 +486,12 @@ function renderGeoValueTable(baseRows, indicatorRows, nivGeoValue) {
   // reference list, so nothing silently disappears) rather than only the
   // ones with data for the selected indicator/year — missing ones render as
   // "—" in every value column, same as any other null.
-  const allCodes = Array.from(new Set([...Object.keys(GEO_LABELS[nivGeoValue] || {}), ...rowsByCode.keys()]));
+  const allCodes = isNational
+    ? NATIONAL_TABLE_NIV_GEOS.map((g) => g.toUpperCase())
+    : Array.from(new Set([...Object.keys(GEO_LABELS[nivGeoValue] || {}), ...rowsByCode.keys()]));
   if (allCodes.length === 0) return;
 
-  allCodes.sort((a, b) => {
+  if (!isNational) allCodes.sort((a, b) => {
     const ka = geoSortKey(nivGeoValue, a);
     const kb = geoSortKey(nivGeoValue, b);
     return ka < kb ? -1 : ka > kb ? 1 : 0;
@@ -486,7 +499,7 @@ function renderGeoValueTable(baseRows, indicatorRows, nivGeoValue) {
 
   const fullRows = allCodes.map((code) => {
     const r = rowsByCode.get(code);
-    return { g: code, valueNew: r ? r.valueNew : null, valueOld: r ? r.valueOld : null };
+    return { g: isNational ? code.toLowerCase() : code, valueNew: r ? r.valueNew : null, valueOld: r ? r.valueOld : null };
   });
 
   const selectedIndicator = getSelectedIndicator();
@@ -523,8 +536,8 @@ function renderGeoValueTable(baseRows, indicatorRows, nivGeoValue) {
   // group over its absolu/% pair).
   const groups = [
     { title: null, subColumns: [
-      ["N°", (r) => (r.g === null || r.g === undefined ? "—" : String(r.g))],
-      ["Libellé", (r) => geoLabel(nivGeoValue, r.g)],
+      [isNational ? "niv_geo" : "N°", (r) => (r.g === null || r.g === undefined ? "—" : String(r.g))],
+      ...(isNational ? [] : [["Libellé", (r) => geoLabel(nivGeoValue, r.g)]]),
     ] },
     { title: "Valeur modifiée", subColumns: [
       [selectedAnnee || "—", (r) => formatNumberOrDash(toNumberOrNull(r.valueNew))],
