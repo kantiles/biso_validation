@@ -17,6 +17,8 @@ import {
   statTodoEl,
   statMissingEl,
   validationFilter,
+  thematiqueFilter,
+  sousThematiqueFilter,
   setStatus,
 } from "./dom.js";
 import { renderTable } from "./table-render.js";
@@ -33,7 +35,7 @@ export const VALIDATION_FILTER_EMPTY = "__empty__";
 // resolved column names for the fields we treat specially, and the cached rows
 // (avoids refetching from Grist on every filter change).
 let mainTableId = null;
-let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null, urlDoc: null };
+let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null, urlDoc: null, thematique: null, sousThematique: null };
 let mainRows = [];
 
 // Distinct id_indicateur values found in data_validation — null until
@@ -92,6 +94,11 @@ export async function loadMainTable(tableId) {
     validation: findColumn(columns, "validation"),
     commentaires: findColumn(columns, "commentaires"),
     urlDoc: findColumn(columns, "url_doc"),
+    // Lookup columns brought over from documentation_biso through the
+    // id_indicateur reference (findColumn's normalize() strips accents, so
+    // "Thématique" matches as-is).
+    thematique: findColumn(columns, "id_indicateur_Thématique"),
+    sousThematique: findColumn(columns, "id_indicateur_Sous-thématique"),
   };
 
   // fetchTable's column-of-arrays shape is turned into one object per row (row-of-
@@ -121,12 +128,19 @@ export async function loadMainTable(tableId) {
   if (!mainSpecialCols.urlDoc) {
     warnings.push("colonne \"url_doc\" introuvable dans " + MAIN_TABLE_HINT + " : lien vers la documentation indisponible");
   }
+  if (!mainSpecialCols.thematique) {
+    warnings.push("colonne \"id_indicateur_Thématique\" introuvable dans " + MAIN_TABLE_HINT + " : filtre Thématique inactif");
+  }
+  if (!mainSpecialCols.sousThematique) {
+    warnings.push("colonne \"id_indicateur_Sous-thématique\" introuvable dans " + MAIN_TABLE_HINT + " : filtre Sous-thématique inactif");
+  }
   if (warnings.length > 0) {
     setStatus("Attention : " + warnings.join(" ; ") + ".", "warn");
   } else {
     setStatus("", "info");
   }
 
+  populateThemeFilters();
   // Order matters: populateIndicatorSelect sets selectedIndicator (default = first
   // indicator found), and renderMainFromCache reads selectedIndicator to filter.
   populateIndicatorSelect();
@@ -254,6 +268,84 @@ function matchesValidationFilter(row) {
   return cellValue === filterValue;
 }
 
+// Values held by a thématique/sous-thématique cell, as a list of strings — a
+// lookup column can come back as a plain value or, for ChoiceList/RefList
+// targets, as a Grist list (["L", a, b, …]). Empty cells yield [].
+function themeValues(row, col) {
+  if (!col) return [];
+  const v = row[col];
+  if (v === null || v === undefined || v === "") return [];
+  const list = Array.isArray(v) ? (v[0] === "L" ? v.slice(1) : v) : [v];
+  return list.filter((x) => x !== null && x !== undefined && x !== "").map(String);
+}
+
+function matchesThemeFilter(row, col, filterValue) {
+  if (!filterValue || !col) return true;
+  const values = themeValues(row, col);
+  if (filterValue === VALIDATION_FILTER_EMPTY) return values.length === 0;
+  return values.includes(filterValue);
+}
+
+function matchesThemeFilters(row) {
+  return (
+    matchesThemeFilter(row, mainSpecialCols.thematique, thematiqueFilter.value) &&
+    matchesThemeFilter(row, mainSpecialCols.sousThematique, sousThematiqueFilter.value)
+  );
+}
+
+// Fills a thématique-style <select> with "Toutes", the distinct values found in
+// `rows` (sorted), and "Non renseigné" when some rows have none. Keeps the
+// current selection when it's still offered, otherwise falls back to "Toutes".
+function fillThemeSelect(select, rows, col) {
+  const previous = select.value;
+  select.innerHTML = "";
+  select.disabled = !col;
+
+  const values = new Set();
+  let hasEmpty = false;
+  if (col) {
+    rows.forEach((row) => {
+      const vals = themeValues(row, col);
+      if (vals.length === 0) hasEmpty = true;
+      vals.forEach((v) => values.add(v));
+    });
+  }
+
+  const addOption = (value, label) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  };
+  addOption("", "Toutes");
+  Array.from(values)
+    .sort((a, b) => a.localeCompare(b, "fr", { numeric: true, sensitivity: "base" }))
+    .forEach((v) => addOption(v, v));
+  if (hasEmpty) addOption(VALIDATION_FILTER_EMPTY, "Non renseigné");
+
+  const stillOffered = Array.from(select.options).some((o) => o.value === previous);
+  select.value = stillOffered ? previous : "";
+}
+
+// Rebuilds the Thématique and Sous-thématique dropdowns from main_validation's
+// rows that have data in data_validation (same eligibility as the indicator
+// dropdown). Sous-thématique options are restricted to the selected thématique.
+export function populateThemeFilters() {
+  const idCol = mainSpecialCols.idIndicateur;
+  const eligible = mainRows.filter((row) => {
+    if (!idCol) return true;
+    const v = row[idCol];
+    if (v === null || v === undefined || v === "") return false;
+    return !dataValidationIndicatorIds || dataValidationIndicatorIds.has(String(v));
+  });
+
+  fillThemeSelect(thematiqueFilter, eligible, mainSpecialCols.thematique);
+  const underThematique = eligible.filter((row) =>
+    matchesThemeFilter(row, mainSpecialCols.thematique, thematiqueFilter.value)
+  );
+  fillThemeSelect(sousThematiqueFilter, underThematique, mainSpecialCols.sousThematique);
+}
+
 // Builds the indicator dropdown from the distinct id_indicateur values found in
 // main_validation, restricted to rows matching the "Validation" filter (see
 // matchesValidationFilter) AND to indicators that actually have data_validation
@@ -283,6 +375,7 @@ export function populateIndicatorSelect() {
     const v = row[col];
     if (v === null || v === undefined || v === "") return;
     if (!matchesValidationFilter(row)) return;
+    if (!matchesThemeFilters(row)) return;
     const s = String(v);
     if (dataValidationIndicatorIds && !dataValidationIndicatorIds.has(s)) return;
     if (!seen.has(s)) {

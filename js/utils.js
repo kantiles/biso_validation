@@ -3,9 +3,10 @@
 
 // Column names are matched case/punctuation-insensitively so small naming drift in
 // the Grist document (e.g. "Id_Indicateur" vs "id_indicateur") doesn't break the
-// widget.
+// widget. Accents are folded first ("Thématique" ≡ "Thematique"), since Grist
+// may strip them from column ids.
 export function normalize(name) {
-  return String(name).toLowerCase().replace(/[^a-z0-9]/g, "");
+  return String(name).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 export function findColumn(columns, targetName) {

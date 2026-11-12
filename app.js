@@ -29,6 +29,8 @@ import { normalize } from "./js/utils.js";
 import {
   setStatus,
   validationFilter,
+  thematiqueFilter,
+  sousThematiqueFilter,
   anneeSelect,
   anneePrevBtn,
   anneeNextBtn,
@@ -41,6 +43,7 @@ import {
   loadDataValidationIndicatorIds,
   loadMainTable,
   populateIndicatorSelect,
+  populateThemeFilters,
   renderMainFromCache,
   renderStats,
   selectIndicator,
@@ -59,7 +62,7 @@ import {
 // n'importe quel fichier js/*.js, index.html ou style.css). Affiché en bas de
 // page (voir index.html) pour vérifier facilement, notamment depuis Grist, que
 // la dernière version déployée sur GitHub Pages est bien celle chargée.
-const APP_VERSION = "30";
+const APP_VERSION = "31";
 document.getElementById("app-version").textContent = APP_VERSION;
 
 // Re-derives everything that depends on the selected indicator but isn't part of
@@ -135,6 +138,23 @@ async function init() {
     refreshForIndicator().catch(reportStatsError);
   });
 
+  // Thématique / Sous-thématique filters (lookup columns
+  // id_indicateur_Thématique / id_indicateur_Sous-thématique in
+  // main_validation) restrict the indicator list the same way. Changing the
+  // thématique also rebuilds the sous-thématique options so they only offer
+  // values present under the chosen thématique.
+  thematiqueFilter.addEventListener("change", () => {
+    populateThemeFilters();
+    populateIndicatorSelect();
+    renderMainFromCache();
+    refreshForIndicator().catch(reportStatsError);
+  });
+  sousThematiqueFilter.addEventListener("change", () => {
+    populateIndicatorSelect();
+    renderMainFromCache();
+    refreshForIndicator().catch(reportStatsError);
+  });
+
   try {
     const tableIds = await grist.docApi.listTables();
 
@@ -159,6 +179,7 @@ async function init() {
     // data_validation would leave the year dropdown/stats/chart permanently
     // empty) and fills in the "indicateurs absent des données" counter.
     await loadDataValidationIndicatorIds(bottomMatch);
+    populateThemeFilters();
     populateIndicatorSelect();
     renderMainFromCache();
     renderStats();

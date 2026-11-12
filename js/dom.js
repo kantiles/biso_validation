@@ -2,6 +2,8 @@
 "use strict";
 
 export const validationFilter = document.getElementById("validation-filter");
+export const thematiqueFilter = document.getElementById("thematique-filter");
+export const sousThematiqueFilter = document.getElementById("sous-thematique-filter");
 export const anneeSelect = document.getElementById("annee-select");
 export const anneePrevBtn = document.getElementById("annee-prev");
 export const anneeNextBtn = document.getElementById("annee-next");
