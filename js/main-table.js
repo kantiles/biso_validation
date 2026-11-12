@@ -149,8 +149,9 @@ export async function loadMainTable(tableId) {
 }
 
 // Top-of-widget counters: total indicators and their breakdown by validation
-// status, computed from ALL of main_validation's rows (ignoring the Validation
-// filter and the selected indicator) so they always read as a global overview.
+// status, computed from main_validation's rows matching the Thématique /
+// Sous-thématique filters (but ignoring the Validation filter and the selected
+// indicator) so they read as an overview of the chosen thématique.
 // Counts distinct id_indicateur values, in case a table ever has duplicate rows
 // per indicator. "Indicateurs" (total) and "À traiter" exclude indicators
 // absent from data_validation (see loadDataValidationIndicatorIds) — nothing to
@@ -173,6 +174,7 @@ export function renderStats() {
   mainRows.forEach((row) => {
     const id = col ? row[col] : null;
     if (id === null || id === undefined || id === "") return;
+    if (!matchesThemeFilters(row)) return;
     const key = String(id);
     if (seen.has(key)) return;
     seen.add(key);

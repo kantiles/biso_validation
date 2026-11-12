@@ -62,7 +62,7 @@ import {
 // n'importe quel fichier js/*.js, index.html ou style.css). Affiché en bas de
 // page (voir index.html) pour vérifier facilement, notamment depuis Grist, que
 // la dernière version déployée sur GitHub Pages est bien celle chargée.
-const APP_VERSION = "31";
+const APP_VERSION = "32";
 document.getElementById("app-version").textContent = APP_VERSION;
 
 // Re-derives everything that depends on the selected indicator but isn't part of
@@ -146,11 +146,13 @@ async function init() {
   thematiqueFilter.addEventListener("change", () => {
     populateThemeFilters();
     populateIndicatorSelect();
+    renderStats();
     renderMainFromCache();
     refreshForIndicator().catch(reportStatsError);
   });
   sousThematiqueFilter.addEventListener("change", () => {
     populateIndicatorSelect();
+    renderStats();
     renderMainFromCache();
     refreshForIndicator().catch(reportStatsError);
   });
