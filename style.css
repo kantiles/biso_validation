@@ -113,6 +113,12 @@ body {
   margin-bottom: 12px;
 }
 
+/* Filtres (thématique, sous-thématique, validation) sur leur propre ligne,
+   au-dessus du sélecteur d'indicateur : marge réduite entre les deux. */
+.toolbar--filters {
+  margin-bottom: 8px;
+}
+
 .toolbar label {
   font-weight: 600;
   color: var(--text-muted);
