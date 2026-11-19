@@ -508,6 +508,8 @@ function renderGeoValueTable(baseRows, indicatorRows, nivGeoValue) {
   chartContainer.appendChild(heading);
 
   const toNumberOrNull = (v) => (v === null || v === undefined ? null : Number(v));
+  // Une décimale de plus pour les valeurs brutes que pour les écarts.
+  const VALUE_DECIMALS = 3;
   const formatPercentOrDash = (v) => (v === null || v === undefined ? "—" : formatNumber(v) + " %");
   // Relative change, expressed as a percentage of `oldV` — null (rendered "—")
   // when either side is missing or `oldV` is 0 (division by zero).
@@ -540,14 +542,14 @@ function renderGeoValueTable(baseRows, indicatorRows, nivGeoValue) {
       ...(isNational ? [] : [["Libellé", (r) => geoLabel(nivGeoValue, r.g)]]),
     ] },
     { title: "Valeur modifiée", subColumns: [
-      [selectedAnnee || "—", (r) => formatNumberOrDash(toNumberOrNull(r.valueNew))],
-      ...priorYears.map((year) => [String(year), (r) => formatNumberOrDash(priorValueNew(r, year))]),
+      [selectedAnnee || "—", (r) => formatNumberOrDash(toNumberOrNull(r.valueNew), VALUE_DECIMALS)],
+      ...priorYears.map((year) => [String(year), (r) => formatNumberOrDash(priorValueNew(r, year), VALUE_DECIMALS)]),
     ] },
   ];
 
   if (valueOldCol) {
     groups.push({ title: "Valeur ancienne", subColumns: [
-      [selectedAnnee || "—", (r) => formatNumberOrDash(toNumberOrNull(r.valueOld))],
+      [selectedAnnee || "—", (r) => formatNumberOrDash(toNumberOrNull(r.valueOld), VALUE_DECIMALS)],
     ] });
     groups.push({ title: "Écart Valeur modifiée - ancienne", subColumns: [
       ["Écart", (r) => {

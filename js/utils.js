@@ -24,12 +24,14 @@ export function quoteIdent(id) {
 // Virgule décimale, espace comme séparateur de milliers (format "fr-FR" —
 // toLocaleString y insère une espace insécable, pas une espace normale, mais
 // ça reste un espace visuellement).
-export function formatNumber(n) {
-  return n.toLocaleString("fr-FR", Number.isInteger(n) ? {} : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// `decimals` : nombre de décimales pour les non-entiers (2 par défaut ; 3 pour
+// les colonnes de valeurs brutes des tableaux géographiques).
+export function formatNumber(n, decimals = 2) {
+  return n.toLocaleString("fr-FR", Number.isInteger(n) ? {} : { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
-export function formatNumberOrDash(n) {
-  return n === null || n === undefined ? "—" : formatNumber(n);
+export function formatNumberOrDash(n, decimals = 2) {
+  return n === null || n === undefined ? "—" : formatNumber(n, decimals);
 }
 
 export function formatValue(value) {
