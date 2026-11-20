@@ -45,7 +45,9 @@ export function renderTable(container, displayColumns, rows, specialCols, tableI
       } else if (key === specialCols.validation) {
         td.appendChild(buildValidationSelect(row, specialCols, tableId, onCellSaved));
       } else if (key === specialCols.commentaires) {
-        td.appendChild(buildCommentInput(row, specialCols, tableId, onCellSaved));
+        td.appendChild(buildTextInput(row, specialCols.commentaires, tableId, onCellSaved));
+      } else if (key === specialCols.reponse) {
+        td.appendChild(buildTextInput(row, specialCols.reponse, tableId, onCellSaved));
       } else {
         td.textContent = formatValue(row[key]);
       }
@@ -103,17 +105,18 @@ function buildValidationSelect(row, specialCols, tableId, onCellSaved) {
   return select;
 }
 
-// A <textarea> rather than a single-line <input> — commentaires can run longer
-// than a table cell's width, so a 2-row box (see .comment-input in style.css)
-// gives room to read/write without truncating. Saved on blur rather than on
-// every keystroke, to avoid one Grist API call per character typed.
-function buildCommentInput(row, specialCols, tableId, onCellSaved) {
+// Free-text cell editor, used for both "commentaires" and "reponse" (`colName`).
+// A <textarea> rather than a single-line <input> — the text can run longer than
+// a table cell's width, so a 2-row box (see .comment-input in style.css) gives
+// room to read/write without truncating. Saved on blur rather than on every
+// keystroke, to avoid one Grist API call per character typed.
+function buildTextInput(row, colName, tableId, onCellSaved) {
   const textarea = document.createElement("textarea");
   textarea.className = "comment-input";
   textarea.rows = 2;
-  textarea.value = row[specialCols.commentaires] || "";
+  textarea.value = row[colName] || "";
   textarea.addEventListener("blur", () => {
-    updateCell(tableId, row.id, specialCols.commentaires, textarea.value, textarea.closest("td"), onCellSaved);
+    updateCell(tableId, row.id, colName, textarea.value, textarea.closest("td"), onCellSaved);
   });
   return textarea;
 }

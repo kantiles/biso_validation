@@ -35,7 +35,7 @@ export const VALIDATION_FILTER_EMPTY = "__empty__";
 // resolved column names for the fields we treat specially, and the cached rows
 // (avoids refetching from Grist on every filter change).
 let mainTableId = null;
-let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null, urlDoc: null, thematique: null, sousThematique: null };
+let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null, reponse: null, urlDoc: null, thematique: null, sousThematique: null };
 let mainRows = [];
 
 // Distinct id_indicateur values found in data_validation — null until
@@ -93,6 +93,8 @@ export async function loadMainTable(tableId) {
     libelle: libelleCol,
     validation: findColumn(columns, "validation"),
     commentaires: findColumn(columns, "commentaires"),
+    // Answer to the commentaire — editable textarea shown next to it.
+    reponse: findColumn(columns, "reponse"),
     urlDoc: findColumn(columns, "url_doc"),
     // Lookup columns brought over from documentation_biso through the
     // id_indicateur reference (findColumn's normalize() strips accents, so
@@ -124,6 +126,9 @@ export async function loadMainTable(tableId) {
   }
   if (!mainSpecialCols.commentaires) {
     warnings.push("colonne \"commentaires\" introuvable dans " + MAIN_TABLE_HINT + " : saisie désactivée");
+  }
+  if (!mainSpecialCols.reponse) {
+    warnings.push("colonne \"reponse\" introuvable dans " + MAIN_TABLE_HINT + " : saisie désactivée");
   }
   if (!mainSpecialCols.urlDoc) {
     warnings.push("colonne \"url_doc\" introuvable dans " + MAIN_TABLE_HINT + " : lien vers la documentation indisponible");
@@ -252,6 +257,9 @@ export function renderMainFromCache() {
   }
   if (mainSpecialCols.commentaires) {
     displayColumns.push({ key: mainSpecialCols.commentaires, header: "commentaires" });
+  }
+  if (mainSpecialCols.reponse) {
+    displayColumns.push({ key: mainSpecialCols.reponse, header: "reponse" });
   }
 
   renderTable(mainTableContainer, displayColumns, rows, mainSpecialCols, mainTableId, handleCellSaved);

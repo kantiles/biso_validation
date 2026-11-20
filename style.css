@@ -317,8 +317,8 @@ tbody tr:nth-child(even) {
   font-weight: 600;
 }
 
-/* The validation <select> and commentaires <textarea> that app.js injects into
-   table cells (buildValidationSelect / buildCommentInput). */
+/* The validation <select> and commentaires/reponse <textarea> that app.js injects into
+   table cells (buildValidationSelect / buildTextInput). */
 td select,
 td input[type="text"] {
   width: 100%;
@@ -328,7 +328,7 @@ td input[type="text"] {
   font-size: 13px;
 }
 
-/* Sized via `rows` (set to 2 in buildCommentInput) rather than a fixed height, so
+/* Sized via `rows` (set to 2 in buildTextInput) rather than a fixed height, so
    it grows with the font instead of clipping; resize stays enabled so it can be
    made taller for a long comment. */
 .comment-input {
