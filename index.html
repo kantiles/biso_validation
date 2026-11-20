@@ -41,6 +41,11 @@
   </div>
 
   <div class="toolbar toolbar--filters">
+    <label for="source-filter">Source</label>
+    <select id="source-filter">
+      <option value="">Toutes</option>
+    </select>
+
     <label for="thematique-filter">Thématique</label>
     <select id="thematique-filter">
       <option value="">Toutes</option>
@@ -50,7 +55,9 @@
     <select id="sous-thematique-filter">
       <option value="">Toutes</option>
     </select>
+  </div>
 
+  <div class="toolbar">
     <label for="validation-filter">Validation</label>
     <select id="validation-filter">
       <option value="">Tous</option>
@@ -59,9 +66,7 @@
       <option value="A revoir">A revoir</option>
       <option value="__empty__">Non renseigné</option>
     </select>
-  </div>
 
-  <div class="toolbar">
     <label for="indicator-select">Indicateur</label>
     <button id="indicator-prev" type="button" class="nav-button" aria-label="Précédent"><strong>&lt;</strong></button>
     <select id="indicator-select"></select>

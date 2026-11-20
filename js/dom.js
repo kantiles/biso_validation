@@ -2,6 +2,7 @@
 "use strict";
 
 export const validationFilter = document.getElementById("validation-filter");
+export const sourceFilter = document.getElementById("source-filter");
 export const thematiqueFilter = document.getElementById("thematique-filter");
 export const sousThematiqueFilter = document.getElementById("sous-thematique-filter");
 export const anneeSelect = document.getElementById("annee-select");

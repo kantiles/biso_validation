@@ -113,8 +113,8 @@ body {
   margin-bottom: 12px;
 }
 
-/* Filtres (thématique, sous-thématique, validation) sur leur propre ligne,
-   au-dessus du sélecteur d'indicateur : marge réduite entre les deux. */
+/* Filtres (source, thématique, sous-thématique) sur leur propre ligne,
+   au-dessus de la ligne validation + indicateur : marge réduite entre les deux. */
 .toolbar--filters {
   margin-bottom: 8px;
 }

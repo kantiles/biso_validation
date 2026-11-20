@@ -17,6 +17,7 @@ import {
   statTodoEl,
   statMissingEl,
   validationFilter,
+  sourceFilter,
   thematiqueFilter,
   sousThematiqueFilter,
   setStatus,
@@ -35,7 +36,7 @@ export const VALIDATION_FILTER_EMPTY = "__empty__";
 // resolved column names for the fields we treat specially, and the cached rows
 // (avoids refetching from Grist on every filter change).
 let mainTableId = null;
-let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null, reponse: null, urlDoc: null, thematique: null, sousThematique: null };
+let mainSpecialCols = { idIndicateur: null, libelle: null, validation: null, commentaires: null, reponse: null, urlDoc: null, source: null, thematique: null, sousThematique: null };
 let mainRows = [];
 
 // Distinct id_indicateur values found in data_validation — null until
@@ -99,6 +100,7 @@ export async function loadMainTable(tableId) {
     // Lookup columns brought over from documentation_biso through the
     // id_indicateur reference (findColumn's normalize() strips accents, so
     // "Thématique" matches as-is).
+    source: findColumn(columns, "id_indicateur_Source"),
     thematique: findColumn(columns, "id_indicateur_Thématique"),
     sousThematique: findColumn(columns, "id_indicateur_Sous-thématique"),
   };
@@ -132,6 +134,9 @@ export async function loadMainTable(tableId) {
   }
   if (!mainSpecialCols.urlDoc) {
     warnings.push("colonne \"url_doc\" introuvable dans " + MAIN_TABLE_HINT + " : lien vers la documentation indisponible");
+  }
+  if (!mainSpecialCols.source) {
+    warnings.push("colonne \"id_indicateur_Source\" introuvable dans " + MAIN_TABLE_HINT + " : filtre Source inactif");
   }
   if (!mainSpecialCols.thematique) {
     warnings.push("colonne \"id_indicateur_Thématique\" introuvable dans " + MAIN_TABLE_HINT + " : filtre Thématique inactif");
@@ -298,6 +303,7 @@ function matchesThemeFilter(row, col, filterValue) {
 
 function matchesThemeFilters(row) {
   return (
+    matchesThemeFilter(row, mainSpecialCols.source, sourceFilter.value) &&
     matchesThemeFilter(row, mainSpecialCols.thematique, thematiqueFilter.value) &&
     matchesThemeFilter(row, mainSpecialCols.sousThematique, sousThematiqueFilter.value)
   );
@@ -337,9 +343,10 @@ function fillThemeSelect(select, rows, col) {
   select.value = stillOffered ? previous : "";
 }
 
-// Rebuilds the Thématique and Sous-thématique dropdowns from main_validation's
-// rows that have data in data_validation (same eligibility as the indicator
-// dropdown). Sous-thématique options are restricted to the selected thématique.
+// Rebuilds the Source, Thématique and Sous-thématique dropdowns from
+// main_validation's rows that have data in data_validation (same eligibility as
+// the indicator dropdown). Each level's options are restricted by the levels
+// above it: Source → Thématique → Sous-thématique.
 export function populateThemeFilters() {
   const idCol = mainSpecialCols.idIndicateur;
   const eligible = mainRows.filter((row) => {
@@ -349,8 +356,12 @@ export function populateThemeFilters() {
     return !dataValidationIndicatorIds || dataValidationIndicatorIds.has(String(v));
   });
 
-  fillThemeSelect(thematiqueFilter, eligible, mainSpecialCols.thematique);
-  const underThematique = eligible.filter((row) =>
+  fillThemeSelect(sourceFilter, eligible, mainSpecialCols.source);
+  const underSource = eligible.filter((row) =>
+    matchesThemeFilter(row, mainSpecialCols.source, sourceFilter.value)
+  );
+  fillThemeSelect(thematiqueFilter, underSource, mainSpecialCols.thematique);
+  const underThematique = underSource.filter((row) =>
     matchesThemeFilter(row, mainSpecialCols.thematique, thematiqueFilter.value)
   );
   fillThemeSelect(sousThematiqueFilter, underThematique, mainSpecialCols.sousThematique);

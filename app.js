@@ -29,6 +29,7 @@ import { normalize } from "./js/utils.js";
 import {
   setStatus,
   validationFilter,
+  sourceFilter,
   thematiqueFilter,
   sousThematiqueFilter,
   anneeSelect,
@@ -62,7 +63,7 @@ import {
 // n'importe quel fichier js/*.js, index.html ou style.css). Affiché en bas de
 // page (voir index.html) pour vérifier facilement, notamment depuis Grist, que
 // la dernière version déployée sur GitHub Pages est bien celle chargée.
-const APP_VERSION = "32";
+const APP_VERSION = "33";
 document.getElementById("app-version").textContent = APP_VERSION;
 
 // Re-derives everything that depends on the selected indicator but isn't part of
@@ -143,13 +144,17 @@ async function init() {
   // main_validation) restrict the indicator list the same way. Changing the
   // thématique also rebuilds the sous-thématique options so they only offer
   // values present under the chosen thématique.
-  thematiqueFilter.addEventListener("change", () => {
+  // Source (id_indicateur_Source) sits above both in the cascade: changing it
+  // rebuilds the thématique and sous-thématique options.
+  const onThemeLevelChange = () => {
     populateThemeFilters();
     populateIndicatorSelect();
     renderStats();
     renderMainFromCache();
     refreshForIndicator().catch(reportStatsError);
-  });
+  };
+  sourceFilter.addEventListener("change", onThemeLevelChange);
+  thematiqueFilter.addEventListener("change", onThemeLevelChange);
   sousThematiqueFilter.addEventListener("change", () => {
     populateIndicatorSelect();
     renderStats();
